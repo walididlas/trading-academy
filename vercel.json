@@ -1,0 +1,7 @@
+{
+  "buildCommand": "cd frontend && npm install && npx vite@5.4.21 build",
+  "outputDirectory": "frontend/dist",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/" }
+  ]
+}
