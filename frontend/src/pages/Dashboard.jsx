@@ -129,12 +129,14 @@ export default function Dashboard() {
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
               {signals.slice(0, 3).map(s => (
-                <div key={s.pair} className={`signal-card ${s.type}`} style={{ padding: '12px 14px' }}>
+                <div key={s.pair} className={`signal-card ${s.type ?? ''}`} style={{ padding: '12px 14px' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                     <span className="signal-pair">{s.pair}</span>
-                    <span className={`signal-direction ${s.type}`}>{s.type === 'waiting' ? 'WATCHING' : s.type.toUpperCase()}</span>
+                    <span className={`signal-direction ${s.type ?? ''}`}>
+                      {!s.type || s.type === 'waiting' ? 'WATCHING' : s.type.toUpperCase()}
+                    </span>
                   </div>
-                  {s.type !== 'waiting' && (
+                  {s.type && s.type !== 'waiting' && (
                     <div style={{ fontSize: '0.8rem', color: 'var(--text-2)', marginTop: 4 }}>{s.reason}</div>
                   )}
                 </div>
