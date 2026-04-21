@@ -26,6 +26,7 @@ Upgrades vs v1:
 """
 import asyncio
 import json
+import os
 from datetime import datetime, timezone, timedelta
 from typing import Callable
 
@@ -36,6 +37,17 @@ NEWS_WINDOW   = 20 * 60   # 20 min window for high-impact news penalty
 SIGNAL_EXPIRY = 4 * 60 * 60
 
 _last_signals: list[dict] = []
+
+# ── Auto-execution state ───────────────────────────────────────────────────────
+_auto_state: dict = {
+    "enabled":           True,
+    "daily_start_equity": None,
+    "last_date":         None,
+    "executed":          set(),   # f"{pair}_{YYYY-MM-DD_HH}" — one per pair per hour
+}
+
+# ── Previous criteria state — for smart transition alerts ─────────────────────
+_last_criteria: dict[str, dict] = {}   # pair → criteria dict from last scan
 
 
 # ─────────────────────────────── Helpers ──────────────────────────────────────
@@ -615,16 +627,116 @@ def _score_pair(
     }
 
 
+# ─────────────────── Auto-execution ──────────────────────────────────────────
+
+async def _auto_execute(sig: dict, broadcast: Callable) -> None:
+    """
+    Auto-execute a STRONG signal on MT5 via MetaApi.
+    Guards: METAAPI_TOKEN must be set, 5% daily loss limit, one trade per pair per hour.
+    """
+    if not os.getenv("METAAPI_TOKEN"):
+        return                          # silently skip in dev / if not configured
+
+    pair = sig.get("pair", "")
+    entry = sig.get("entry")
+    sl    = sig.get("sl")
+    tp1   = sig.get("tp1")
+
+    if not (entry and sl and tp1):
+        return                          # incomplete signal — no levels yet
+
+    state = _auto_state
+    now   = _utc_now()
+    today = now.date().isoformat()
+    exec_key = f"{pair}_{today}_{now.hour}"
+
+    if exec_key in state["executed"]:
+        return                          # already executed this pair this hour
+
+    try:
+        from trade_executor import get_account_info, place_order, calc_lots as _calc_lots
+
+        # ── Fetch live equity ──────────────────────────────────────────────────
+        info   = await get_account_info()
+        equity = float(info.get("equity") or info.get("balance") or 0)
+        if equity <= 0:
+            return
+
+        # ── Reset daily state on new day ───────────────────────────────────────
+        if state["last_date"] != today:
+            state["last_date"]          = today
+            state["daily_start_equity"] = equity
+            state["enabled"]            = True
+            state["executed"]           = set()
+
+        if state["daily_start_equity"] is None:
+            state["daily_start_equity"] = equity
+
+        # ── Daily 5% loss limit ────────────────────────────────────────────────
+        start_eq    = state["daily_start_equity"]
+        loss_pct    = (start_eq - equity) / start_eq * 100 if start_eq > 0 else 0
+        if loss_pct >= 5.0:
+            if state["enabled"]:
+                state["enabled"] = False
+                await broadcast(json.dumps({
+                    "auto_trade_paused": {
+                        "reason": (
+                            f"Daily 5% loss limit hit — equity ${equity:,.2f} "
+                            f"(started ${start_eq:,.2f}, down {loss_pct:.1f}%). "
+                            "Auto-trading paused until tomorrow."
+                        )
+                    }
+                }))
+            return
+
+        # ── Lot size — 1% risk of current equity ──────────────────────────────
+        lots = _calc_lots(equity, 1.0, entry, sl, pair)
+        if not lots:
+            lots = 0.01
+
+        # ── Place order ────────────────────────────────────────────────────────
+        result = await place_order(
+            symbol=pair, direction=sig["direction"],
+            lots=lots, entry=entry, sl=sl, tp=tp1,
+        )
+
+        state["executed"].add(exec_key)
+
+        order_id = str(result.get("orderId") or result.get("positionId") or "")
+
+        await broadcast(json.dumps({
+            "auto_executed": {
+                "pair":      pair,
+                "direction": sig["direction"],
+                "lots":      lots,
+                "entry":     entry,
+                "sl":        sl,
+                "tp1":       tp1,
+                "score":     sig.get("score"),
+                "order_id":  order_id,
+            }
+        }))
+
+    except Exception as exc:
+        await broadcast(json.dumps({
+            "auto_execute_failed": {
+                "pair":  pair,
+                "error": str(exc),
+            }
+        }))
+
+
 # ─────────────────── Scanner Loop ─────────────────────────────────────────────
 
 async def run_scanner(broadcast: Callable, get_ohlcv_fn: Callable) -> None:
     """Background scanner. `get_ohlcv_fn(symbol, timeframe)` → {bars: [...]}"""
-    global _last_signals
+    global _last_signals, _last_criteria
 
     while True:
         try:
             signals:       list[dict] = []
             strong_alerts: list[dict] = []
+            smart_events:  list[dict] = []   # extra WS events for targeted alerts
 
             for pair in PAIRS:
                 try:
@@ -642,11 +754,59 @@ async def run_scanner(broadcast: Callable, get_ohlcv_fn: Callable) -> None:
 
                 signals.append(sig)
 
-                # Fire alert only on grade transitions (not every scan)
-                prev = next((s for s in _last_signals if s.get("pair") == pair), None)
-                was_strong = prev and prev.get("grade") == "STRONG"
-                if sig.get("grade") == "STRONG" and not was_strong:
+                prev      = next((s for s in _last_signals if s.get("pair") == pair), None)
+                prev_crit = _last_criteria.get(pair, {})
+                curr_crit = sig.get("criteria", {})
+
+                prev_grade = prev.get("grade") if prev else None
+                prev_score = prev.get("score", 0) if prev else 0
+                curr_score = sig.get("score", 0)
+
+                # ── STRONG transition → auto-execute + push signal alert ───────
+                if sig.get("grade") == "STRONG" and prev_grade != "STRONG":
                     strong_alerts.append(sig)
+                    asyncio.create_task(_auto_execute(sig, broadcast))
+
+                # ── Score crosses 70 for the first time (WATCH alert) ──────────
+                elif curr_score >= 70 and prev_score < 70 and sig.get("grade") != "STRONG":
+                    smart_events.append({
+                        "watch_alert": {
+                            "pair":      pair,
+                            "score":     curr_score,
+                            "direction": sig.get("direction"),
+                            "reason":    sig.get("reason", ""),
+                        }
+                    })
+
+                # ── Market structure break (criterion just turned True) ─────────
+                ms_prev = prev_crit.get("market_structure", {}).get("triggered", False)
+                ms_curr = curr_crit.get("market_structure", {}).get("triggered", False)
+                if ms_curr and not ms_prev and curr_score >= 60:
+                    smart_events.append({
+                        "structure_break": {
+                            "pair":      pair,
+                            "direction": sig.get("direction"),
+                            "detail":    curr_crit.get("market_structure", {}).get("detail", ""),
+                            "score":     curr_score,
+                        }
+                    })
+
+                # ── Optimal entry zone just reached ────────────────────────────
+                pd_prev = prev_crit.get("premium_discount", {}).get("triggered", False)
+                pd_curr = curr_crit.get("premium_discount", {}).get("triggered", False)
+                if pd_curr and not pd_prev and curr_score >= 60:
+                    pd     = sig.get("premium_discount", {})
+                    smart_events.append({
+                        "entry_zone": {
+                            "pair":      pair,
+                            "direction": sig.get("direction"),
+                            "zone":      pd.get("zone", ""),
+                            "pct":       pd.get("pct"),
+                            "score":     curr_score,
+                        }
+                    })
+
+                _last_criteria[pair] = curr_crit
 
             _last_signals = signals
             payload: dict = {"signals": signals}
@@ -654,6 +814,10 @@ async def run_scanner(broadcast: Callable, get_ohlcv_fn: Callable) -> None:
                 payload["alert"] = strong_alerts[0]
 
             await broadcast(json.dumps(payload))
+
+            # Broadcast smart events individually (separate WS messages)
+            for event in smart_events:
+                await broadcast(json.dumps(event))
 
         except Exception:
             pass

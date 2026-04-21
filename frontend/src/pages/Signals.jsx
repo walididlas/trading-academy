@@ -296,156 +296,8 @@ function ExpiryBadge({ expiresAt }) {
   )
 }
 
-// ── MT5 Execution panel ───────────────────────────────────────────────────────
-function TradeExecutor({ signal, calcLots, balance, riskPct = 1 }) {
-  const [state, setState]   = useState('idle')   // idle | confirm | loading | done | error
-  const [result, setResult] = useState(null)
-  const [errMsg, setErrMsg] = useState('')
-
-  if (!signal.entry || !signal.sl || !signal.tp1) return null
-
-  const lots = calcLots
-    ? calcLots(signal.entry, signal.sl, signal.pair)?.lots ?? 0.01
-    : 0.01
-
-  const isLong = signal.direction === 'long'
-  const dec    = signal.pair === 'XAUUSD' ? 2 : signal.pair?.includes('JPY') ? 3 : 5
-  const f      = v => v?.toFixed(dec)
-
-  async function execute() {
-    setState('loading')
-    try {
-      const res = await fetch(`${API_BASE}/api/trade/execute`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          pair:      signal.pair,
-          direction: signal.direction,
-          lots,
-          entry:     signal.entry,
-          sl:        signal.sl,
-          tp:        signal.tp1,
-        }),
-      })
-      const data = await res.json()
-      if (data.ok) {
-        setResult(data.result)
-        setState('done')
-      } else {
-        setErrMsg(data.error || 'Trade failed')
-        setState('error')
-      }
-    } catch (e) {
-      setErrMsg(e.message)
-      setState('error')
-    }
-  }
-
-  if (state === 'done') {
-    return (
-      <div style={{
-        marginTop: 12, padding: '10px 14px', borderRadius: 8,
-        background: 'rgba(34,211,165,0.1)', border: '1px solid rgba(34,211,165,0.3)',
-        fontSize: '0.8rem', color: 'var(--green)', fontWeight: 700,
-      }}>
-        ✓ Order placed on MT5 · {signal.pair} {isLong ? 'BUY' : 'SELL'} {lots} lots
-      </div>
-    )
-  }
-
-  if (state === 'error') {
-    return (
-      <div style={{
-        marginTop: 12, padding: '10px 14px', borderRadius: 8,
-        background: 'rgba(248,113,113,0.1)', border: '1px solid rgba(248,113,113,0.3)',
-        fontSize: '0.78rem', color: 'var(--red)',
-      }}>
-        ✗ {errMsg}
-        <button
-          style={{ marginLeft: 10, background: 'none', border: 'none', color: 'var(--text-3)', cursor: 'pointer', fontSize: '0.78rem' }}
-          onClick={() => setState('idle')}
-        >Try again</button>
-      </div>
-    )
-  }
-
-  if (state === 'confirm') {
-    return (
-      <div style={{
-        marginTop: 12, padding: '12px 14px', borderRadius: 8,
-        background: 'var(--surface-3)', border: '1px solid var(--border)',
-      }}>
-        <div style={{ fontSize: '0.78rem', color: 'var(--text-2)', marginBottom: 10 }}>
-          Confirm live MT5 order:
-        </div>
-        <div style={{
-          display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '6px 12px',
-          fontSize: '0.72rem', marginBottom: 12,
-        }}>
-          {[
-            ['Pair',      signal.pair],
-            ['Side',      isLong ? '▲ BUY' : '▼ SELL'],
-            ['Lots',      `${lots}`],
-            ['Entry',     f(signal.entry)],
-            ['Stop Loss', f(signal.sl)],
-            ['TP1',       f(signal.tp1)],
-          ].map(([label, val]) => (
-            <div key={label}>
-              <div style={{ color: 'var(--text-4)', marginBottom: 1 }}>{label}</div>
-              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: 'var(--text)' }}>{val}</div>
-            </div>
-          ))}
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button
-            style={{
-              flex: 1, padding: '10px', borderRadius: 8, border: 'none',
-              background: isLong ? 'var(--green)' : 'var(--red)',
-              color: '#07070d', fontWeight: 800, fontSize: '0.88rem', cursor: 'pointer',
-              touchAction: 'manipulation',
-            }}
-            onClick={execute}
-          >
-            YES — Execute on MT5
-          </button>
-          <button
-            style={{
-              padding: '10px 16px', borderRadius: 8,
-              border: '1px solid var(--border)', background: 'transparent',
-              color: 'var(--text-3)', cursor: 'pointer', fontSize: '0.85rem',
-              touchAction: 'manipulation',
-            }}
-            onClick={() => setState('idle')}
-          >
-            NO
-          </button>
-        </div>
-      </div>
-    )
-  }
-
-  // idle — show the trigger button
-  return (
-    <div style={{ marginTop: 12 }}>
-      <button
-        style={{
-          width: '100%', padding: '11px', borderRadius: 8,
-          border: `1px solid ${isLong ? 'rgba(34,211,165,0.4)' : 'rgba(248,113,113,0.4)'}`,
-          background: isLong ? 'rgba(34,211,165,0.08)' : 'rgba(248,113,113,0.08)',
-          color: isLong ? 'var(--green)' : 'var(--red)',
-          fontWeight: 700, fontSize: '0.88rem', cursor: 'pointer',
-          touchAction: 'manipulation',
-        }}
-        onClick={() => setState('confirm')}
-      >
-        {isLong ? '▲' : '▼'} Execute on MT5 · {lots} lots
-      </button>
-    </div>
-  )
-}
-
 // ── STRONG signal card ────────────────────────────────────────────────────────
-function SignalCard({ signal, calcLots, balance, riskPct, onPaperTrade, onSetAlert, newsRisk }) {
+function SignalCard({ signal, calcLots, riskPct, onPaperTrade, onSetAlert, newsRisk }) {
   const [expanded, setExpanded] = useState(signal.grade === 'STRONG')
   const [paperDone, setPaperDone] = useState(false)
   const [alertSet, setAlertSet] = useState(false)
@@ -609,9 +461,17 @@ function SignalCard({ signal, calcLots, balance, riskPct, onPaperTrade, onSetAle
             )}
           </div>
 
-          {/* MT5 execution */}
-          {signal.entry != null && signal.grade === 'STRONG' && (
-            <TradeExecutor signal={signal} calcLots={calcLots} balance={balance} />
+          {/* Auto-trading indicator for STRONG signals */}
+          {signal.grade === 'STRONG' && signal.entry != null && (
+            <div style={{
+              marginTop: 12, padding: '8px 12px', borderRadius: 8,
+              background: 'rgba(34,211,165,0.07)', border: '1px solid rgba(34,211,165,0.2)',
+              fontSize: '0.75rem', color: 'var(--green)',
+              display: 'flex', alignItems: 'center', gap: 6,
+            }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--green)', flexShrink: 0, animation: 'pulse 2s infinite' }} />
+              Auto-trading ON — will execute on MT5 when METAAPI_TOKEN is configured
+            </div>
           )}
 
           {/* Action buttons */}
@@ -852,7 +712,6 @@ export default function Signals() {
                   key={s.pair}
                   signal={s}
                   calcLots={hasBalance ? calcLots : null}
-                  balance={balance}
                   riskPct={riskPct}
                   onPaperTrade={handlePaperTrade}
                   onSetAlert={handleSetAlert}

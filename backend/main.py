@@ -51,33 +51,135 @@ manager = ConnectionManager()
 
 async def _kz_open_scheduler():
     """
-    Every 60 seconds, check if a Kill Zone just opened.
-    Morocco UTC+1: London = 10:00-13:00 MAT → 09:00-12:00 UTC
-                   NY     = 15:30-18:30 MAT → 14:30-17:30 UTC
-    Broadcasts {"killzone_open": "<name>", "morocco_time": "<HH:MM>"} once per session open.
+    Every 60s — fires two events per Kill Zone:
+      1. kz_warning  5 min before open  (Morocco UTC+1)
+      2. killzone_open at open
+    London: 09:00 UTC / 10:00 Morocco  |  NY: 14:30 UTC / 15:30 Morocco
     """
-    last_fired: str | None = None
+    last_warning: str | None = None
+    last_open:    str | None = None
+
     while True:
         await asyncio.sleep(60)
         now = datetime.now(timezone.utc)
-        t = now.hour * 60 + now.minute
+        t   = now.hour * 60 + now.minute
 
-        if 9 * 60 <= t < 9 * 60 + 2:
-            name, morocco = "London Kill Zone", "10:00"
-        elif 14 * 60 + 30 <= t < 14 * 60 + 32:
-            name, morocco = "NY Kill Zone", "15:30"
+        # ── 5-min warning ──────────────────────────────────────────────────────
+        if 8 * 60 + 55 <= t < 8 * 60 + 57:
+            warn_name, warn_mor = "London Kill Zone", "10:00"
+        elif 14 * 60 + 25 <= t < 14 * 60 + 27:
+            warn_name, warn_mor = "NY Kill Zone", "15:30"
         else:
-            name = None
+            warn_name = None
 
-        if name and name != last_fired:
-            last_fired = name
+        if warn_name and warn_name != last_warning:
+            last_warning = warn_name
             await manager.broadcast(json.dumps({
-                "killzone_open": name,
-                "morocco_time": morocco,
-                "pairs": ["XAUUSD", "EURUSD", "GBPUSD", "NZDJPY"],
+                "kz_warning": {
+                    "name":        warn_name,
+                    "morocco_time": warn_mor,
+                    "opens_in":    "5 minutes",
+                    "pairs":       ["XAUUSD", "EURUSD", "GBPUSD", "NZDJPY"],
+                }
             }))
-        elif not name:
-            last_fired = None  # reset so next open fires again
+        elif not warn_name:
+            last_warning = None
+
+        # ── Open ───────────────────────────────────────────────────────────────
+        if 9 * 60 <= t < 9 * 60 + 2:
+            open_name, open_mor = "London Kill Zone", "10:00"
+        elif 14 * 60 + 30 <= t < 14 * 60 + 32:
+            open_name, open_mor = "NY Kill Zone", "15:30"
+        else:
+            open_name = None
+
+        if open_name and open_name != last_open:
+            last_open = open_name
+            await manager.broadcast(json.dumps({
+                "killzone_open": open_name,
+                "morocco_time":  open_mor,
+                "pairs":         ["XAUUSD", "EURUSD", "GBPUSD", "NZDJPY"],
+            }))
+        elif not open_name:
+            last_open = None
+
+
+async def _news_warning_scheduler():
+    """
+    Every 60s — if next HIGH-impact event is 25–35 min away, fire a 30-min warning.
+    Fires once per event (keyed by event title).
+    """
+    last_warned: str | None = None
+    while True:
+        await asyncio.sleep(60)
+        try:
+            from calendar_fetcher import get_cached_calendar
+            cal = get_cached_calendar()
+            nxt = cal.get("next_high") if cal else None
+            if not nxt:
+                continue
+            mins_until = (nxt.get("utc_ts", 0) - datetime.now(timezone.utc).timestamp()) / 60
+            if 25 <= mins_until <= 35:
+                key = nxt.get("title", "")
+                if key and key != last_warned:
+                    last_warned = key
+                    await manager.broadcast(json.dumps({
+                        "news_warning": {
+                            "title":      nxt.get("title", ""),
+                            "currencies": nxt.get("currencies", []),
+                            "mins_until": round(mins_until),
+                            "impact":     "HIGH",
+                        }
+                    }))
+            else:
+                last_warned = None
+        except Exception:
+            pass
+
+
+async def _position_monitor():
+    """
+    Every 30s — detect when MT5 positions close (SL/TP hit) and broadcast
+    a position_closed notification with P&L.
+    Only runs if METAAPI_TOKEN is configured.
+    """
+    if not os.getenv("METAAPI_TOKEN"):
+        return
+
+    prev_positions: dict[str, dict] = {}   # position_id → position dict
+
+    while True:
+        await asyncio.sleep(30)
+        try:
+            from trade_executor import get_positions
+            positions = await get_positions()
+            current_ids = {p["id"]: p for p in positions if "id" in p}
+
+            # Positions that were open last cycle but are gone now → closed
+            for pid, pos in prev_positions.items():
+                if pid not in current_ids:
+                    profit     = pos.get("profit") or pos.get("unrealizedProfit") or 0
+                    pair       = pos.get("symbol", "")
+                    direction  = pos.get("type", "").lower()  # buy/sell
+                    # Determine if SL or TP based on profit sign and direction
+                    if direction == "buy":
+                        reason = "tp" if profit > 0 else "sl"
+                    else:
+                        reason = "tp" if profit > 0 else "sl"
+
+                    await manager.broadcast(json.dumps({
+                        "position_closed": {
+                            "pair":      pair,
+                            "direction": "long" if direction == "buy" else "short",
+                            "reason":    reason,
+                            "pnl":       round(float(profit), 2),
+                        }
+                    }))
+
+            prev_positions = current_ids
+
+        except Exception:
+            pass
 
 
 @asynccontextmanager
@@ -97,14 +199,17 @@ async def lifespan(app: FastAPI):
     from news_fetcher import run_news_fetcher
     from calendar_fetcher import run_calendar_fetcher
 
-    scanner_task  = asyncio.create_task(run_scanner(manager.broadcast, _get_ohlcv))
-    kz_task       = asyncio.create_task(_kz_open_scheduler())
-    news_task     = asyncio.create_task(run_news_fetcher(manager.broadcast))
-    calendar_task = asyncio.create_task(run_calendar_fetcher())
+    scanner_task      = asyncio.create_task(run_scanner(manager.broadcast, _get_ohlcv))
+    kz_task           = asyncio.create_task(_kz_open_scheduler())
+    news_task         = asyncio.create_task(run_news_fetcher(manager.broadcast))
+    calendar_task     = asyncio.create_task(run_calendar_fetcher())
+    news_warn_task    = asyncio.create_task(_news_warning_scheduler())
+    position_task     = asyncio.create_task(_position_monitor())
 
     yield
 
-    for task in (scanner_task, kz_task, news_task, calendar_task):
+    for task in (scanner_task, kz_task, news_task, calendar_task,
+                 news_warn_task, position_task):
         task.cancel()
         try:
             await task

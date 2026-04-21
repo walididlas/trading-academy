@@ -220,10 +220,10 @@ export function AlertProvider({ children }) {
 
             if (data.alert) {
               const a = data.alert
-              const dir = a.type === 'long' ? '▲ LONG' : '▼ SHORT'
+              const dir = a.direction === 'long' ? '▲ LONG' : '▼ SHORT'
               const title = `${a.pair} ${dir} Signal`
               const body = a.entry
-                ? `Entry ${a.entry} · SL ${a.sl} · TP ${a.tp} · R:R ${a.rr}:1`
+                ? `Entry ${a.entry} · SL ${a.sl} · TP1 ${a.tp1 ?? a.tp} · Score ${a.score}`
                 : a.reason
               addToast({ type: 'signal', title, body, signal: a })
               showNativeNotif(title, body, `signal-${a.pair}`)
@@ -234,6 +234,91 @@ export function AlertProvider({ children }) {
               const body = `${data.morocco_time} Morocco · ICC setups active on ${(data.pairs || []).join(', ')}`
               addToast({ type: 'killzone', title, body })
               showNativeNotif(title, body, 'killzone')
+            }
+
+            // ── 5-min Kill Zone warning ──────────────────────────────────────
+            if (data.kz_warning) {
+              const kz = data.kz_warning
+              const title = `⏰ ${kz.name} in ${kz.opens_in}`
+              const body  = `${kz.morocco_time} Morocco · Prepare setups on ${(kz.pairs || []).join(', ')}`
+              addToast({ type: 'killzone', title, body })
+              showNativeNotif(title, body, 'kz-warning')
+            }
+
+            // ── Auto-execution confirmation ──────────────────────────────────
+            if (data.auto_executed) {
+              const x = data.auto_executed
+              const dir = x.direction === 'long' ? '▲ BUY' : '▼ SELL'
+              const title = `✅ Trade Placed — ${x.pair} ${dir}`
+              const body  = `${x.lots} lots @ ${x.entry} · SL ${x.sl} · TP1 ${x.tp1}${x.order_id ? ` · ID ${x.order_id}` : ''}`
+              addToast({ type: 'signal', title, body })
+              showNativeNotif(title, body, `exec-${x.pair}`)
+            }
+
+            // ── Auto-execution failed ────────────────────────────────────────
+            if (data.auto_execute_failed) {
+              const f = data.auto_execute_failed
+              addToast({ type: 'warning', title: `⚠ MT5 Error — ${f.pair}`, body: f.error })
+            }
+
+            // ── Daily loss limit hit ─────────────────────────────────────────
+            if (data.auto_trade_paused) {
+              const title = '🛑 Auto-Trading Paused'
+              const body  = data.auto_trade_paused.reason || '5% daily loss limit reached'
+              addToast({ type: 'warning', title, body })
+              showNativeNotif(title, body, 'auto-paused')
+            }
+
+            // ── Position closed (SL or TP hit) ──────────────────────────────
+            if (data.position_closed) {
+              const c    = data.position_closed
+              const won  = c.pnl >= 0
+              const icon = won ? '🎯' : '🛑'
+              const why  = c.reason === 'tp' ? 'TP Hit' : 'SL Hit'
+              const title = `${icon} ${c.pair} — ${why}`
+              const body  = `${c.direction === 'long' ? '▲ LONG' : '▼ SHORT'} · P&L ${won ? '+' : ''}$${c.pnl}`
+              addToast({ type: won ? 'signal' : 'warning', title, body })
+              showNativeNotif(title, body, `closed-${c.pair}`)
+            }
+
+            // ── Watch alert (score 70+) ──────────────────────────────────────
+            if (data.watch_alert) {
+              const w   = data.watch_alert
+              const dir = w.direction === 'long' ? '▲ LONG' : '▼ SHORT'
+              const title = `👀 ${w.pair} ${dir} — Watch (${w.score}pts)`
+              const body  = w.reason || 'Score crossed 70 — monitor for entry'
+              addToast({ type: 'killzone', title, body })
+              showNativeNotif(title, body, `watch-${w.pair}`)
+            }
+
+            // ── Market structure break ───────────────────────────────────────
+            if (data.structure_break) {
+              const s   = data.structure_break
+              const dir = s.direction === 'long' ? '▲' : '▼'
+              const title = `📊 ${s.pair} ${dir} Structure Break (${s.score}pts)`
+              const body  = s.detail || 'BOS/CHoCH confirmed'
+              addToast({ type: 'killzone', title, body })
+              showNativeNotif(title, body, `struct-${s.pair}`)
+            }
+
+            // ── Optimal entry zone reached ───────────────────────────────────
+            if (data.entry_zone) {
+              const z   = data.entry_zone
+              const dir = z.direction === 'long' ? '▲ LONG' : '▼ SHORT'
+              const title = `🎯 ${z.pair} ${dir} — Entry Zone (${z.score}pts)`
+              const body  = `In ${z.zone} (${z.pct}% of range) — optimal for ${z.direction}`
+              addToast({ type: 'signal', title, body })
+              showNativeNotif(title, body, `zone-${z.pair}`)
+            }
+
+            // ── 30-min high-impact news warning ─────────────────────────────
+            if (data.news_warning) {
+              const n   = data.news_warning
+              const cur = (n.currencies || []).join('/')
+              const title = `⚡ HIGH News in ~${n.mins_until}min${cur ? ` — ${cur}` : ''}`
+              const body  = n.title || 'High-impact event approaching'
+              addToast({ type: 'confluence', title, body })
+              showNativeNotif(title, body, `news-warn-${n.title}`)
             }
           } catch (_) {}
         }
