@@ -143,6 +143,48 @@ async def _news_warning_scheduler():
             pass
 
 
+# ── Weekly report storage (max 8 reports) ────────────────────────────────────
+_weekly_reports: list[dict] = []
+
+
+async def _weekly_report_scheduler():
+    """
+    Fires every 60s.
+    On Sunday between 19:00 and 19:02 UTC (= 20:00–20:02 Morocco UTC+1),
+    generate and broadcast the weekly performance report.
+    Fires once per Sunday (keyed by ISO week number).
+    """
+    last_week_fired: int | None = None
+
+    while True:
+        await asyncio.sleep(60)
+        try:
+            now = datetime.now(timezone.utc)
+            # Sunday = weekday 6, 19:00–19:02 UTC
+            if now.weekday() != 6:
+                continue
+            if not (19 * 60 <= now.hour * 60 + now.minute < 19 * 60 + 2):
+                continue
+            week_num = now.isocalendar()[1]
+            if week_num == last_week_fired:
+                continue
+            last_week_fired = week_num
+
+            from trade_executor import get_weekly_stats
+            stats = await get_weekly_stats()
+            stats["generated_at"] = now.isoformat()
+            stats["week_num"]     = week_num
+
+            # Store — keep last 8
+            _weekly_reports.append(stats)
+            if len(_weekly_reports) > 8:
+                _weekly_reports.pop(0)
+
+            await manager.broadcast(json.dumps({"weekly_report": stats}))
+        except Exception:
+            pass
+
+
 async def _position_monitor():
     """
     Every 30s — detect when MT5 positions close (SL/TP hit) and broadcast
@@ -230,11 +272,12 @@ async def lifespan(app: FastAPI):
     calendar_task     = asyncio.create_task(run_calendar_fetcher())
     news_warn_task    = asyncio.create_task(_news_warning_scheduler())
     position_task     = asyncio.create_task(_position_monitor())
+    weekly_task       = asyncio.create_task(_weekly_report_scheduler())
 
     yield
 
     for task in (scanner_task, kz_task, news_task, calendar_task,
-                 news_warn_task, position_task):
+                 news_warn_task, position_task, weekly_task):
         task.cancel()
         try:
             await task
@@ -553,6 +596,32 @@ async def get_auto_trade_status():
     """Return current auto-trade state (enabled, paused_reason, consecutive_losses)."""
     from scanner import get_auto_state
     return {"ok": True, **get_auto_state()}
+
+
+@app.get("/api/reports/weekly")
+async def get_weekly_reports():
+    """Return the last 8 stored weekly performance reports (newest first)."""
+    return {"ok": True, "reports": list(reversed(_weekly_reports))}
+
+
+@app.post("/api/reports/weekly/generate")
+async def generate_weekly_report():
+    """Manually trigger a weekly report generation (for testing / on-demand)."""
+    try:
+        from trade_executor import get_weekly_stats
+        now   = datetime.now(timezone.utc)
+        stats = await get_weekly_stats()
+        stats["generated_at"] = now.isoformat()
+        stats["week_num"]     = now.isocalendar()[1]
+
+        _weekly_reports.append(stats)
+        if len(_weekly_reports) > 8:
+            _weekly_reports.pop(0)
+
+        await manager.broadcast(json.dumps({"weekly_report": stats}))
+        return {"ok": True, "report": stats}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 @app.get("/api/trade/positions")

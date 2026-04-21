@@ -382,6 +382,21 @@ export function AlertProvider({ children }) {
               addToast({ type: 'confluence', title, body })
               showNativeNotif(title, body, `news-warn-${n.title}`)
             }
+
+            // ── Weekly performance report ────────────────────────────────────
+            if (data.weekly_report) {
+              const r     = data.weekly_report
+              const icon  = r.verdict === 'Strong week' ? '🏆' : r.verdict === 'Rough week' ? '📉' : '➖'
+              const title = `${icon} Weekly Report — ${r.verdict}`
+              const body  = `${r.total_trades} trades · ${r.win_rate}% WR · ${r.total_pnl >= 0 ? '+' : ''}$${r.total_pnl}`
+              addToast({ type: r.verdict === 'Strong week' ? 'signal' : r.verdict === 'Rough week' ? 'warning' : 'killzone', title, body })
+              showNativeNotif(title, body, 'weekly-report')
+              try {
+                const existing = JSON.parse(localStorage.getItem('weekly_reports') || '[]')
+                const updated  = [r, ...existing].slice(0, 8)
+                localStorage.setItem('weekly_reports', JSON.stringify(updated))
+              } catch (_) {}
+            }
           } catch (_) {}
         }
       } catch (_) {

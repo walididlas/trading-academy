@@ -8,6 +8,7 @@ import { useCalendar } from '../hooks/useCalendar'
 import NewsTicker from '../components/NewsTicker'
 import CalendarPanel from '../components/CalendarPanel'
 import DrawdownPanel from '../components/DrawdownPanel'
+import WeeklyReportCard from '../components/WeeklyReportCard'
 
 function isInKillZone() {
   const t = new Date().getUTCHours() * 60 + new Date().getUTCMinutes()
@@ -150,6 +151,11 @@ export default function Dashboard() {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Weekly performance reports */}
+      <div style={{ marginBottom: 24 }}>
+        <WeeklyReportCard />
       </div>
 
       {/* Economic calendar */}

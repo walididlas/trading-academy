@@ -94,6 +94,102 @@ async def get_account_info() -> dict:
     return await _get("/account-information")
 
 
+async def get_deals_for_range(start_dt, end_dt) -> list[dict]:
+    """Fetch deals closed between start_dt and end_dt (UTC datetime objects)."""
+    start_iso = start_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    end_iso   = end_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    try:
+        data = await _get(f"/history-deals/time/{start_iso}/{end_iso}")
+        if isinstance(data, list):
+            return data
+        return data.get("deals", [])
+    except Exception:
+        return []
+
+
+async def get_weekly_stats() -> dict:
+    """
+    Compute weekly performance stats from MetaApi deal history.
+    Week = Monday 00:00 UTC → Sunday 23:59 UTC (current week).
+    Returns structured stats including verdict.
+    """
+    from datetime import datetime, timezone, timedelta
+    now   = datetime.now(timezone.utc)
+    # Monday of current week
+    monday = now - timedelta(days=now.weekday())
+    week_start = monday.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_end   = now
+
+    deals = await get_deals_for_range(week_start, week_end)
+
+    # Filter to actual closed trade deals with non-zero profit
+    trade_deals = [
+        d for d in deals
+        if float(d.get("profit", 0)) != 0
+    ]
+
+    total_trades = len(trade_deals)
+    if total_trades == 0:
+        return {
+            "ok":           True,
+            "week_start":   week_start.isoformat(),
+            "week_end":     week_end.isoformat(),
+            "total_trades": 0,
+            "wins":         0,
+            "losses":       0,
+            "win_rate":     0,
+            "total_pnl":    0.0,
+            "best_trade":   None,
+            "worst_trade":  None,
+            "most_active":  None,
+            "verdict":      "Breakeven week",
+        }
+
+    wins   = [d for d in trade_deals if float(d.get("profit", 0)) > 0]
+    losses = [d for d in trade_deals if float(d.get("profit", 0)) < 0]
+    total_pnl = round(sum(float(d.get("profit", 0)) for d in trade_deals), 2)
+    win_rate  = round(len(wins) / total_trades * 100) if total_trades else 0
+
+    # Best / worst trade with R computation (approximate from profit magnitude)
+    def _r(deal):
+        """Approximate R as profit / average risk (we don't have exact SL stored)."""
+        return round(float(deal.get("profit", 0)), 2)
+
+    best_deal  = max(trade_deals, key=lambda d: float(d.get("profit", 0)))
+    worst_deal = min(trade_deals, key=lambda d: float(d.get("profit", 0)))
+
+    best_trade  = {"pair": best_deal.get("symbol", ""),  "pnl": round(float(best_deal.get("profit", 0)), 2)}
+    worst_trade = {"pair": worst_deal.get("symbol", ""), "pnl": round(float(worst_deal.get("profit", 0)), 2)}
+
+    # Most active pair
+    from collections import Counter
+    pair_counts  = Counter(d.get("symbol", "") for d in trade_deals)
+    most_active  = pair_counts.most_common(1)[0][0] if pair_counts else None
+
+    # Verdict
+    if total_pnl > 0 and win_rate >= 55:
+        verdict = "Strong week"
+    elif total_pnl < 0:
+        verdict = "Rough week"
+    else:
+        verdict = "Breakeven week"
+
+    return {
+        "ok":           True,
+        "week_start":   week_start.isoformat(),
+        "week_end":     week_end.isoformat(),
+        "total_trades": total_trades,
+        "wins":         len(wins),
+        "losses":       len(losses),
+        "win_rate":     win_rate,
+        "total_pnl":    total_pnl,
+        "best_trade":   best_trade,
+        "worst_trade":  worst_trade,
+        "most_active":  most_active,
+        "verdict":      verdict,
+    }
+
+
 async def get_deals_today() -> list[dict]:
     """
     Fetch deals closed today (UTC) from MetaApi history.
