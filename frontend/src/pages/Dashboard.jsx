@@ -6,6 +6,7 @@ import { CURRICULUM, getTotalLessons } from '../data/curriculum'
 import { useAlerts } from '../contexts/AlertContext'
 import { useCalendar } from '../hooks/useCalendar'
 import NewsTicker from '../components/NewsTicker'
+import CalendarPanel from '../components/CalendarPanel'
 
 function isInKillZone() {
   const t = new Date().getUTCHours() * 60 + new Date().getUTCMinutes()
@@ -17,7 +18,7 @@ export default function Dashboard() {
   const { progress, getTotalProgress, getModuleProgress } = useProgress()
   const { done, total, pct } = getTotalProgress(CURRICULUM)
   const { signals: ctxSignals, news, wsStatus } = useAlerts()
-  const { nextHighEvent } = useCalendar()
+  const { nextHighEvent, calendar, riskByPair, nextEventByPair, upcoming24h } = useCalendar()
   const [localSignals, setLocalSignals] = useState([])
 
   useEffect(() => {
@@ -146,6 +147,14 @@ export default function Dashboard() {
           )}
         </div>
       </div>
+
+      {/* Economic calendar */}
+      <CalendarPanel
+        calendar={calendar}
+        riskByPair={riskByPair}
+        nextEventByPair={nextEventByPair}
+        upcoming24h={upcoming24h}
+      />
 
       {/* Modules overview */}
       <div className="card">

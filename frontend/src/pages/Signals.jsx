@@ -7,6 +7,7 @@ import AccountSetupModal from '../components/AccountSetupModal'
 import SetupDiagram from '../components/SetupDiagram'
 import NewsFeed from '../components/NewsFeed'
 import NewsShield from '../components/NewsShield'
+import CalendarStrip from '../components/CalendarStrip'
 
 const PAIRS = ['XAUUSD', 'EURUSD', 'GBPUSD', 'NZDJPY']
 
@@ -606,7 +607,7 @@ function MonitoringRow({ signal }) {
 export default function Signals() {
   const { signals: ctxSignals, news, wsStatus, permission, requestPermission, autoTradingPaused, setAutoTradingPaused } = useAlerts()
   const { balance, setBalance, riskPct, setRiskPct, calcLots, hasBalance } = useAccount()
-  const { getNewsRiskForPair } = useCalendar()
+  const { getNewsRiskForPair, riskByPair, nextEventByPair } = useCalendar()
   const [signals, setSignals] = useState([])
   const [loading, setLoading] = useState(true)
   const [lastRefresh, setLastRefresh] = useState(null)
@@ -827,6 +828,9 @@ export default function Signals() {
       )}
 
       <KillZoneClock />
+
+      {/* News risk strip — 4 pairs traffic light */}
+      <CalendarStrip riskByPair={riskByPair} nextEventByPair={nextEventByPair} />
 
       {/* Auto-trading paused banner */}
       {autoTradingPaused && (

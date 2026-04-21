@@ -193,15 +193,68 @@ def get_all_events_today() -> list[dict]:
     ]
 
 
+def get_upcoming_events_for_pairs(pairs: list[str], minutes: int = 1440) -> list[dict]:
+    """
+    Events in next `minutes` (default 24h) that affect any of the given pairs.
+    Each event gets an extra `affects_pairs` list.
+    """
+    now     = _now_ts()
+    cutoff  = now + minutes * 60
+    result  = []
+    seen    = set()
+    for ev in _events:
+        if not (now <= ev["utc_ts"] <= cutoff):
+            continue
+        # Which of the requested pairs does this event affect?
+        affected = [
+            p for p in pairs
+            if ev["currency"] in PAIR_CURRENCIES.get(p, [])
+        ]
+        if not affected:
+            continue
+        key = (ev["title"], ev["currency"], int(ev["utc_ts"] // 60))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append({
+            **ev,
+            "minutes_until": round((ev["utc_ts"] - now) / 60, 1),
+            "affects_pairs": affected,
+        })
+    result.sort(key=lambda x: x["utc_ts"])
+    return result
+
+
+def get_next_event_for_pair(pair: str) -> Optional[dict]:
+    """Next event (any impact) for a given pair within 24h."""
+    now    = _now_ts()
+    cutoff = now + 24 * 3600
+    curs   = PAIR_CURRENCIES.get(pair.upper(), [])
+    hits   = [
+        ev for ev in _events
+        if ev["utc_ts"] > now and ev["utc_ts"] <= cutoff and ev["currency"] in curs
+    ]
+    if not hits:
+        return None
+    ev = min(hits, key=lambda x: x["utc_ts"])
+    return {**ev, "minutes_until": round((ev["utc_ts"] - now) / 60, 1)}
+
+
 def get_cached_calendar() -> dict:
     """Full calendar payload for REST endpoint."""
+    TRACKED_PAIRS = ["XAUUSD", "EURUSD", "GBPUSD", "NZDJPY"]
     return {
-        "upcoming_30m":  get_upcoming_events(30),
-        "upcoming_60m":  get_upcoming_events(60),
-        "next_high":     get_next_high_event(),
-        "today":         get_all_events_today(),
-        "risk_by_pair":  {
+        "upcoming_30m":   get_upcoming_events(30),
+        "upcoming_60m":   get_upcoming_events(60),
+        "upcoming_24h":   get_upcoming_events_for_pairs(TRACKED_PAIRS, 1440),
+        "next_high":      get_next_high_event(),
+        "today":          get_all_events_today(),
+        "risk_by_pair":   {
             pair: get_news_risk_for_pair(pair)
             for pair in PAIR_CURRENCIES
+        },
+        "next_event_by_pair": {
+            pair: get_next_event_for_pair(pair)
+            for pair in TRACKED_PAIRS
         },
     }
