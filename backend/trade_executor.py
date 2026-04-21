@@ -93,6 +93,27 @@ async def get_account_info() -> dict:
     """Return balance, equity, free margin."""
     return await _get("/account-information")
 
+
+async def get_deals_today() -> list[dict]:
+    """
+    Fetch deals closed today (UTC) from MetaApi history.
+    Returns list of deal dicts with at least: symbol, type, profit, time.
+    """
+    from datetime import datetime, timezone
+    now   = datetime.now(timezone.utc)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    # MetaApi history/deals?startTime=...&endTime=...
+    start_iso = start.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    end_iso   = now.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    try:
+        data = await _get(f"/history-deals/time/{start_iso}/{end_iso}")
+        # API returns list directly or wrapped in {"deals": [...]}
+        if isinstance(data, list):
+            return data
+        return data.get("deals", [])
+    except Exception:
+        return []
+
 async def get_positions() -> list[dict]:
     """Return all open positions."""
     return await _get("/positions")

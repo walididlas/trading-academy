@@ -410,6 +410,92 @@ async def move_to_breakeven(req: BreakevenRequest):
         return {"ok": False, "error": str(e)}
 
 
+@app.get("/api/trade/account")
+async def get_account_snapshot():
+    """
+    Returns live equity + today's closed-deal stats for the drawdown dashboard.
+    Falls back gracefully when METAAPI_TOKEN is not set.
+    """
+    if not os.getenv("METAAPI_TOKEN"):
+        return {"ok": False, "error": "METAAPI_TOKEN not configured"}
+    try:
+        from trade_executor import get_account_info, get_deals_today
+        from scanner import get_auto_state
+
+        info  = await get_account_info()
+        deals = await get_deals_today()
+
+        # ── Today's closed deals ───────────────────────────────────────────────
+        # Filter to actual trade closes (type IN_OUT, OUT, etc.) with non-zero profit
+        trade_deals = [
+            d for d in deals
+            if d.get("entryType") in ("DEAL_ENTRY_OUT", "OUT", "out")
+            or d.get("type") in ("DEAL_TYPE_SELL", "DEAL_TYPE_BUY")
+        ]
+
+        today_pnl    = sum(float(d.get("profit", 0)) for d in deals)
+        wins_today   = [d for d in deals if float(d.get("profit", 0)) > 0]
+        losses_today = [d for d in deals if float(d.get("profit", 0)) < 0]
+        total_closed = len(wins_today) + len(losses_today)
+        win_rate     = round(len(wins_today) / total_closed * 100) if total_closed else None
+
+        # Consecutive streak: walk backwards through deals sorted by time
+        sorted_deals = sorted(deals, key=lambda d: d.get("time", ""), reverse=True)
+        streak = 0
+        streak_type = None
+        for d in sorted_deals:
+            p = float(d.get("profit", 0))
+            if p == 0:
+                continue
+            kind = "win" if p > 0 else "loss"
+            if streak_type is None:
+                streak_type = kind
+            if kind == streak_type:
+                streak += 1
+            else:
+                break
+
+        # Max drawdown today: minimum cumulative P&L at any point
+        running = 0.0
+        peak    = 0.0
+        max_dd  = 0.0
+        for d in sorted(deals, key=lambda x: x.get("time", "")):
+            running += float(d.get("profit", 0))
+            peak     = max(peak, running)
+            dd       = peak - running
+            max_dd   = max(max_dd, dd)
+
+        # Daily loss % from scanner state
+        auto = get_auto_state()
+        start_eq = auto.get("daily_start_equity")
+        equity   = float(info.get("equity") or info.get("balance") or 0)
+        balance  = float(info.get("balance") or equity)
+
+        if start_eq and start_eq > 0:
+            loss_pct = (start_eq - equity) / start_eq * 100
+        else:
+            loss_pct = 0.0
+
+        return {
+            "ok":           True,
+            "equity":       round(equity, 2),
+            "balance":      round(balance, 2),
+            "start_equity": round(start_eq, 2) if start_eq else None,
+            "today_pnl":    round(today_pnl, 2),
+            "loss_pct":     round(loss_pct, 2),
+            "wins_today":   len(wins_today),
+            "losses_today": len(losses_today),
+            "total_closed": total_closed,
+            "win_rate":     win_rate,
+            "streak":       streak,
+            "streak_type":  streak_type,
+            "max_drawdown": round(max_dd, 2),
+            "paused":       auto.get("paused_reason") is not None,
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.get("/api/spread/{pair}")
 async def get_spread(pair: str):
     """Live spread for a pair in pips, compared against max allowed."""

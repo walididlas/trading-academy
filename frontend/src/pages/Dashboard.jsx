@@ -7,6 +7,7 @@ import { useAlerts } from '../contexts/AlertContext'
 import { useCalendar } from '../hooks/useCalendar'
 import NewsTicker from '../components/NewsTicker'
 import CalendarPanel from '../components/CalendarPanel'
+import DrawdownPanel from '../components/DrawdownPanel'
 
 function isInKillZone() {
   const t = new Date().getUTCHours() * 60 + new Date().getUTCMinutes()
@@ -93,6 +94,9 @@ export default function Dashboard() {
           </div>
         </div>
       </div>
+
+      {/* Drawdown & account performance */}
+      <DrawdownPanel />
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginBottom: 24 }}>
         {/* Continue learning */}
