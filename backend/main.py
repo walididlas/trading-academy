@@ -252,20 +252,27 @@ async def _position_monitor():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from scanner import run_scanner
-    from tradingview import get_ohlcv_summary
+    from price_fetcher import run_price_fetcher
 
     async def _get_ohlcv(symbol: str, timeframe: str = "60") -> dict:
+        """
+        Return cached OHLCV data for the scanner.
+        Priority: yfinance auto-cache → manually pushed MCP data → empty.
+        No live TradingView call — Railway has no CDP connection.
+        """
         key = f"{symbol}_{timeframe}"
         if key in _ohlcv_cache:
             return _ohlcv_cache[key]
-        # Fallback: try base symbol key (legacy)
+        # Fallback: plain symbol key (H1 legacy)
         if symbol in _ohlcv_cache:
             return _ohlcv_cache[symbol]
-        return await get_ohlcv_summary(symbol, timeframe=timeframe, count=120)
+        return {"bars": [], "symbol": symbol, "timeframe": timeframe}
 
     from news_fetcher import run_news_fetcher
     from calendar_fetcher import run_calendar_fetcher
 
+    # Start price fetcher first so cache is warm before scanner's first run
+    price_task        = asyncio.create_task(run_price_fetcher(_ohlcv_cache))
     scanner_task      = asyncio.create_task(run_scanner(manager.broadcast, _get_ohlcv))
     kz_task           = asyncio.create_task(_kz_open_scheduler())
     news_task         = asyncio.create_task(run_news_fetcher(manager.broadcast))
@@ -276,7 +283,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    for task in (scanner_task, kz_task, news_task, calendar_task,
+    for task in (price_task, scanner_task, kz_task, news_task, calendar_task,
                  news_warn_task, position_task, weekly_task):
         task.cancel()
         try:
@@ -358,13 +365,32 @@ async def feed_ohlcv(req: FeedRequest):
     return {"ok": True, "bars": len(req.bars), "symbol": req.symbol, "timeframe": req.timeframe, "key": key}
 
 
+@app.get("/api/feed/status")
+async def get_feed_status():
+    """
+    Summary of what's currently in the OHLCV cache (bars count + source per key).
+    Useful for verifying the yfinance price fetcher is working on Railway.
+    """
+    from price_fetcher import YF_SYMBOLS
+    summary = {}
+    for pair in YF_SYMBOLS:
+        for tf in ("60", "15"):
+            key  = f"{pair}_{tf}"
+            data = _ohlcv_cache.get(key)
+            summary[key] = {
+                "bars":   len(data["bars"]) if data else 0,
+                "source": data.get("source", "manual") if data else "missing",
+            }
+    return {"ok": True, "cache": summary, "total_keys": len(_ohlcv_cache)}
+
+
 @app.get("/api/feed/{symbol}")
 async def get_feed(symbol: str, timeframe: str = "60"):
     key = f"{symbol.upper()}_{timeframe}"
     data = _ohlcv_cache.get(key) or _ohlcv_cache.get(symbol.upper())
     if not data:
         return {"symbol": symbol, "bars": 0, "cached": False}
-    return {"symbol": symbol, "timeframe": timeframe, "bars": len(data.get("bars", [])), "cached": True}
+    return {"symbol": symbol, "timeframe": timeframe, "bars": len(data.get("bars", [])), "cached": True, "source": data.get("source", "manual")}
 
 
 @app.get("/api/news")
