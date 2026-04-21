@@ -8,8 +8,8 @@ export default function AccountSetupModal({ onSave }) {
   function handleSubmit(e) {
     e.preventDefault()
     const b = parseFloat(balance)
-    if (!b || b < 100) {
-      setError('Enter a valid balance (minimum $100)')
+    if (!b || b < 10) {
+      setError('Enter a valid balance (minimum $10)')
       return
     }
     onSave(b, parseFloat(risk))
@@ -42,8 +42,8 @@ export default function AccountSetupModal({ onSave }) {
               type="number"
               className="tool-input"
               placeholder="e.g. 5000"
-              min="100"
-              step="100"
+              min="10"
+              step="10"
               value={balance}
               onChange={e => { setBalance(e.target.value); setError('') }}
               autoFocus

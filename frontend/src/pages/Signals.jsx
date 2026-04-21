@@ -146,49 +146,75 @@ function CriteriaList({ criteria }) {
 }
 
 // ── Position size display ─────────────────────────────────────────────────────
-function PositionInfo({ signal, calcLots }) {
+function PositionInfo({ signal, calcLots, riskPct }) {
   const pos = calcLots ? calcLots(signal.entry, signal.sl, signal.pair) : null
   if (!pos) return null
 
+  // Use actual R:R from signal if available, else 1/2/3
+  const profitTP1 = signal.rr1 != null
+    ? parseFloat((pos.riskUSD * signal.rr1).toFixed(2))
+    : pos.profitTP1
+  const profitTP2 = signal.rr2 != null
+    ? parseFloat((pos.riskUSD * signal.rr2).toFixed(2))
+    : pos.profitTP2
+  const profitTP3 = signal.rr3 != null
+    ? parseFloat((pos.riskUSD * signal.rr3).toFixed(2))
+    : pos.profitTP3
+
   return (
-    <div style={{
-      background: 'var(--surface-3)', borderRadius: 'var(--r)', padding: '10px 14px',
-      display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px 16px', marginTop: 12,
-    }}>
-      <div>
-        <div style={{ fontSize: '0.67rem', color: 'var(--text-4)', marginBottom: 1 }}>Lot Size (1% risk)</div>
-        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: 'var(--gold)' }}>
-          {pos.lots} lots
+    <div style={{ marginTop: 12 }}>
+      {/* 2% cap warning */}
+      {pos.capped && pos.warning && (
+        <div style={{
+          background: 'rgba(251,191,36,0.1)', border: '1px solid rgba(251,191,36,0.3)',
+          borderRadius: 6, padding: '7px 10px', marginBottom: 8,
+          fontSize: '0.72rem', color: 'var(--gold)', lineHeight: 1.5,
+        }}>
+          ⚠️ {pos.warning}
         </div>
-      </div>
-      <div>
-        <div style={{ fontSize: '0.67rem', color: 'var(--text-4)', marginBottom: 1 }}>Max Risk</div>
-        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: 'var(--red)' }}>
-          −${pos.riskUSD}
+      )}
+
+      <div style={{
+        background: 'var(--surface-3)', borderRadius: 'var(--r)', padding: '10px 14px',
+        display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px 16px',
+      }}>
+        <div>
+          <div style={{ fontSize: '0.67rem', color: 'var(--text-4)', marginBottom: 1 }}>
+            Lot Size ({riskPct ?? 1}% risk)
+          </div>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: pos.capped ? 'var(--gold)' : 'var(--green)' }}>
+            {pos.lots} lots
+          </div>
         </div>
-      </div>
-      <div>
-        <div style={{ fontSize: '0.67rem', color: 'var(--text-4)', marginBottom: 1 }}>
-          {signal.rr1 ? `Profit at TP1 (${signal.rr1.toFixed(1)}:1)` : 'Profit at TP1'}
+        <div>
+          <div style={{ fontSize: '0.67rem', color: 'var(--text-4)', marginBottom: 1 }}>Risk ({pos.slPips} pips)</div>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, color: 'var(--red)' }}>
+            −${pos.riskUSD}
+          </div>
         </div>
-        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.82rem', color: 'var(--green)' }}>
-          +${pos.profitTP1}
+        <div>
+          <div style={{ fontSize: '0.67rem', color: 'var(--text-4)', marginBottom: 1 }}>
+            {signal.rr1 ? `TP1 (${signal.rr1.toFixed(1)}R)` : 'TP1 (1R)'}
+          </div>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.82rem', color: 'var(--green)' }}>
+            +${profitTP1}
+          </div>
         </div>
-      </div>
-      <div>
-        <div style={{ fontSize: '0.67rem', color: 'var(--text-4)', marginBottom: 1 }}>
-          {signal.rr2 ? `Profit at TP2 (${signal.rr2.toFixed(1)}:1)` : 'Profit at TP2'}
+        <div>
+          <div style={{ fontSize: '0.67rem', color: 'var(--text-4)', marginBottom: 1 }}>
+            {signal.rr2 ? `TP2 (${signal.rr2.toFixed(1)}R)` : 'TP2 (2R)'}
+          </div>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.82rem', color: 'var(--green)' }}>
+            +${profitTP2}
+          </div>
         </div>
-        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.82rem', color: 'var(--green)' }}>
-          +${pos.profitTP2}
-        </div>
-      </div>
-      <div style={{ gridColumn: '1/-1' }}>
-        <div style={{ fontSize: '0.67rem', color: 'var(--text-4)', marginBottom: 1 }}>
-          {signal.rr3 ? `Profit at TP3 (${signal.rr3.toFixed(1)}:1)` : 'Profit at TP3'}
-        </div>
-        <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: '0.95rem', color: 'var(--green)' }}>
-          +${pos.profitTP3}
+        <div style={{ gridColumn: '1/-1' }}>
+          <div style={{ fontSize: '0.67rem', color: 'var(--text-4)', marginBottom: 1 }}>
+            {signal.rr3 ? `TP3 (${signal.rr3.toFixed(1)}R)` : 'TP3 (3R)'}
+          </div>
+          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: '0.95rem', color: 'var(--green)' }}>
+            +${profitTP3}
+          </div>
         </div>
       </div>
     </div>
@@ -419,7 +445,7 @@ function TradeExecutor({ signal, calcLots, balance, riskPct = 1 }) {
 }
 
 // ── STRONG signal card ────────────────────────────────────────────────────────
-function SignalCard({ signal, calcLots, balance, onPaperTrade, onSetAlert, newsRisk }) {
+function SignalCard({ signal, calcLots, balance, riskPct, onPaperTrade, onSetAlert, newsRisk }) {
   const [expanded, setExpanded] = useState(signal.grade === 'STRONG')
   const [paperDone, setPaperDone] = useState(false)
   const [alertSet, setAlertSet] = useState(false)
@@ -559,7 +585,7 @@ function SignalCard({ signal, calcLots, balance, onPaperTrade, onSetAlert, newsR
                     Trade Levels
                   </div>
                   <LevelsTable signal={signal} />
-                  <PositionInfo signal={signal} calcLots={calcLots} />
+                  <PositionInfo signal={signal} calcLots={calcLots} riskPct={riskPct} />
                 </>
               )}
             </div>
@@ -649,7 +675,7 @@ function MonitoringRow({ signal }) {
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function Signals() {
   const { signals: ctxSignals, news, wsStatus, permission, requestPermission } = useAlerts()
-  const { balance, setBalance, setRiskPct, calcLots, hasBalance } = useAccount()
+  const { balance, setBalance, riskPct, setRiskPct, calcLots, hasBalance } = useAccount()
   const { getNewsRiskForPair } = useCalendar()
   const [signals, setSignals] = useState([])
   const [loading, setLoading] = useState(true)
@@ -827,6 +853,7 @@ export default function Signals() {
                   signal={s}
                   calcLots={hasBalance ? calcLots : null}
                   balance={balance}
+                  riskPct={riskPct}
                   onPaperTrade={handlePaperTrade}
                   onSetAlert={handleSetAlert}
                   newsRisk={getNewsRiskForPair(s.pair)}
