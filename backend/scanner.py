@@ -101,6 +101,23 @@ def get_auto_state() -> dict:
 # ── Previous criteria state — for smart transition alerts ─────────────────────
 _last_criteria: dict[str, dict] = {}   # pair → criteria dict from last scan
 
+# ── Signal snapshots at time of execution (for post-trade replay) ──────────────
+_signal_snapshots: dict[str, dict] = {}  # pair → full signal dict at time of execution
+
+
+def store_signal_snapshot(pair: str, signal: dict) -> None:
+    """Store signal details at time of trade execution for replay generation."""
+    import copy
+    _signal_snapshots[pair] = {
+        **copy.deepcopy(signal),
+        "snapshot_ts": _utc_now().isoformat(),
+    }
+
+
+def get_signal_snapshot(pair: str) -> dict | None:
+    """Return the stored signal snapshot for a pair, or None."""
+    return _signal_snapshots.get(pair.upper())
+
 
 # ─────────────────────────────── Helpers ──────────────────────────────────────
 
@@ -792,6 +809,7 @@ async def _auto_execute(sig: dict, broadcast: Callable) -> None:
         )
 
         state["executed"].add(exec_key)
+        store_signal_snapshot(pair, sig)   # save for post-trade replay
 
         order_id = str(result.get("orderId") or result.get("positionId") or "")
 

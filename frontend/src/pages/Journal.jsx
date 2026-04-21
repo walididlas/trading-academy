@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
+import SessionReplay from '../components/SessionReplay'
 
 const STORAGE_KEY = 'trading_journal'
 
@@ -628,6 +629,7 @@ function GradeBar({ grades, total }) {
 
 // ── Main Journal page ─────────────────────────────────────────────────────────
 export default function Journal() {
+  const [activeTab, setActiveTab] = useState('journal')  // 'journal' | 'replay'
   const [trades, setTrades]       = useState(loadTrades)
   const [showForm, setShowForm]   = useState(false)
   const [editId, setEditId]       = useState(null)
@@ -687,11 +689,43 @@ export default function Journal() {
             <h1 className="page-title">Trade Journal</h1>
             <p className="page-subtitle">Log every trade · Auto P&amp;L · ICC grading · Weekly review</p>
           </div>
-          <button className="btn btn-primary" onClick={() => { setEditId(null); setShowForm(f => !f) }}>
-            {showForm && !editId ? '✕ Cancel' : '+ Log Trade'}
-          </button>
+          {activeTab === 'journal' && (
+            <button className="btn btn-primary" onClick={() => { setEditId(null); setShowForm(f => !f) }}>
+              {showForm && !editId ? '✕ Cancel' : '+ Log Trade'}
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Tab bar */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
+        {[
+          { id: 'journal', label: '📓 Journal' },
+          { id: 'replay',  label: '🎬 Session Replay' },
+        ].map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            style={{
+              padding: '8px 18px', borderRadius: '8px 8px 0 0', fontWeight: 700,
+              fontSize: '0.82rem', cursor: 'pointer', border: '1px solid var(--border)',
+              borderBottom: activeTab === tab.id ? '1px solid var(--bg)' : '1px solid var(--border)',
+              background: activeTab === tab.id ? 'var(--bg)' : 'var(--surface-2)',
+              color: activeTab === tab.id ? 'var(--text)' : 'var(--text-3)',
+              marginBottom: activeTab === tab.id ? -1 : 0,
+              touchAction: 'manipulation',
+            }}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Session Replay tab */}
+      {activeTab === 'replay' && <SessionReplay />}
+
+      {/* Journal tab — hidden when replay is active */}
+      {activeTab !== 'replay' && <>
 
       {/* Form */}
       {showForm && (
@@ -831,6 +865,8 @@ export default function Journal() {
           )}
         </>
       )}
+
+      </> /* end journal tab */}
     </div>
   )
 }

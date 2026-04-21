@@ -300,6 +300,47 @@ export function AlertProvider({ children }) {
               const body  = `${c.direction === 'long' ? '▲ LONG' : '▼ SHORT'} · P&L ${won ? '+' : ''}$${c.pnl}`
               addToast({ type: won ? 'signal' : 'warning', title, body })
               showNativeNotif(title, body, `closed-${c.pair}`)
+
+              // ── Generate and persist session replay entry ──────────────────
+              try {
+                const snap = c.signal_snapshot
+                const criteria = snap?.criteria ?? {}
+                const CRITERIA_KEYS = ['kill_zone','order_block','fvg','market_structure','ema50','premium_discount','news_clear']
+                const metCriteria  = CRITERIA_KEYS.filter(k => criteria[k]?.triggered)
+                const missCriteria = CRITERIA_KEYS.filter(k => !criteria[k]?.triggered)
+                const score        = snap?.score ?? null
+                const allMet       = missCriteria.length === 0 || (score != null && score >= 80)
+
+                let verdict
+                if (c.reason === 'tp') {
+                  verdict = 'target_hit'
+                } else if (allMet) {
+                  verdict = 'good_trade_bad_outcome'  // full setup, SL hit
+                } else {
+                  verdict = 'criteria_missing'        // incomplete setup, SL hit
+                }
+
+                const replay = {
+                  id:          `replay_${Date.now()}`,
+                  ts:          c.close_ts ?? new Date().toISOString(),
+                  pair:        c.pair,
+                  direction:   c.direction,
+                  reason:      c.reason,
+                  pnl:         c.pnl,
+                  score,
+                  entry:       snap?.entry ?? null,
+                  sl:          snap?.sl    ?? null,
+                  tp1:         snap?.tp1   ?? null,
+                  criteria,
+                  met_criteria:  metCriteria,
+                  miss_criteria: missCriteria,
+                  verdict,
+                  snapshot_ts: snap?.snapshot_ts ?? null,
+                }
+
+                const existing = JSON.parse(localStorage.getItem('session_replays') || '[]')
+                localStorage.setItem('session_replays', JSON.stringify([replay, ...existing].slice(0, 200)))
+              } catch (_) {}
             }
 
             // ── Watch alert (score 70+) ──────────────────────────────────────

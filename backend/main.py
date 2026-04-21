@@ -169,12 +169,22 @@ async def _position_monitor():
                     direction  = pos.get("type", "").lower()  # buy/sell
                     reason     = "tp" if float(profit) > 0 else "sl"
 
+                    # Attach stored signal snapshot for replay generation
+                    signal_snapshot = None
+                    try:
+                        from scanner import get_signal_snapshot
+                        signal_snapshot = get_signal_snapshot(pair)
+                    except Exception:
+                        pass
+
                     await manager.broadcast(json.dumps({
                         "position_closed": {
-                            "pair":      pair,
-                            "direction": "long" if direction == "buy" else "short",
-                            "reason":    reason,
-                            "pnl":       round(float(profit), 2),
+                            "pair":            pair,
+                            "direction":       "long" if direction == "buy" else "short",
+                            "reason":          reason,
+                            "pnl":             round(float(profit), 2),
+                            "signal_snapshot": signal_snapshot,
+                            "close_ts":        datetime.now(timezone.utc).isoformat(),
                         }
                     }))
 
