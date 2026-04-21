@@ -208,6 +208,77 @@ async def get_calendar():
     return get_cached_calendar()
 
 
+# ── Trade execution endpoints (MetaApi) ────────────────────────────────────────
+
+class TradeRequest(BaseModel):
+    pair:      str
+    direction: str          # 'long' | 'short'
+    lots:      float
+    entry:     float
+    sl:        float
+    tp:        float        # TP1 used for the live order
+
+
+class CloseRequest(BaseModel):
+    position_id: str
+
+
+class BreakevenRequest(BaseModel):
+    position_id: str
+    entry_price: float
+
+
+@app.post("/api/trade/execute")
+async def execute_trade(req: TradeRequest):
+    """Place a market order on MT5 via MetaApi."""
+    if not os.getenv("METAAPI_TOKEN"):
+        return {"ok": False, "error": "METAAPI_TOKEN not configured"}
+    try:
+        from trade_executor import place_order
+        result = await place_order(
+            symbol=req.pair, direction=req.direction,
+            lots=req.lots, entry=req.entry, sl=req.sl, tp=req.tp,
+        )
+        return {"ok": True, "result": result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/trade/close")
+async def close_trade(req: CloseRequest):
+    """Close an open MT5 position by id."""
+    try:
+        from trade_executor import close_position
+        result = await close_position(req.position_id)
+        return {"ok": True, "result": result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/trade/breakeven")
+async def move_to_breakeven(req: BreakevenRequest):
+    """Move SL to entry price (breakeven) on an open position."""
+    try:
+        from trade_executor import set_sl_to_breakeven
+        result = await set_sl_to_breakeven(req.position_id, req.entry_price)
+        return {"ok": True, "result": result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/api/trade/positions")
+async def get_open_positions():
+    """Return all open MT5 positions."""
+    if not os.getenv("METAAPI_TOKEN"):
+        return {"ok": False, "positions": [], "error": "METAAPI_TOKEN not configured"}
+    try:
+        from trade_executor import get_positions
+        positions = await get_positions()
+        return {"ok": True, "positions": positions}
+    except Exception as e:
+        return {"ok": False, "positions": [], "error": str(e)}
+
+
 # ── WebSocket ──────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/signals")
