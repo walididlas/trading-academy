@@ -420,6 +420,26 @@ async def move_to_breakeven(req: BreakevenRequest):
         return {"ok": False, "error": str(e)}
 
 
+@app.get("/api/backtest")
+async def run_backtest(
+    pairs:     str = "XAUUSD,EURUSD,GBPUSD,NZDJPY",
+    min_score: int = 60,
+    days:      int = 30,
+):
+    """
+    Run ICC backtest over cached OHLCV data.
+    params: pairs (comma-sep), min_score (60|70|80), days (7|14|30)
+    """
+    import asyncio
+    from backtest import run_backtest as _run_backtest
+    pair_list = [p.strip().upper() for p in pairs.split(",") if p.strip()]
+    # Run in thread pool so we don't block the event loop
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, _run_backtest, _ohlcv_cache, pair_list, min_score, days
+    )
+    return result
+
+
 @app.get("/api/trade/account")
 async def get_account_snapshot():
     """

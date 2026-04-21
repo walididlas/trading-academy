@@ -9,6 +9,7 @@ import Journal from './pages/Journal'
 import Corrector from './pages/Corrector'
 import Tools from './pages/Tools'
 import Assistant from './pages/Assistant'
+import Backtest from './pages/Backtest'
 
 export default function App() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
           <Route path="/academy/module/:moduleId/lesson/:lessonId" element={<LessonPage />} />
           <Route path="/signals"                       element={<Signals />} />
           <Route path="/journal"                       element={<Journal />} />
+          <Route path="/backtest"                      element={<Backtest />} />
           <Route path="/corrector"                     element={<Corrector />} />
           <Route path="/tools"                         element={<Tools />} />
           <Route path="/assistant"                     element={<Assistant />} />

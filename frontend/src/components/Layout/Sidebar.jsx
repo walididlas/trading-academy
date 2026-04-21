@@ -9,6 +9,7 @@ const NAV = [
   { path: '/signals',   icon: '📡', label: 'Live Signals', badge: 'LIVE' },
   { path: '/assistant', icon: '🤖', label: 'AI Assistant' },
   { path: '/journal',   icon: '📓', label: 'Trade Journal' },
+  { path: '/backtest',  icon: '📊', label: 'Backtesting' },
   { path: '/corrector', icon: '🎯', label: 'Trade Corrector' },
   { path: '/tools',     icon: '🛠️', label: 'Tools' },
 ]
