@@ -16,14 +16,11 @@ export default function Dashboard() {
   const navigate = useNavigate()
   const { progress, getTotalProgress, getModuleProgress } = useProgress()
   const { done, total, pct } = getTotalProgress(CURRICULUM)
-  const { signals: ctxSignals, news } = useAlerts()
+  const { signals: ctxSignals, news, wsStatus } = useAlerts()
   const { nextHighEvent } = useCalendar()
-  const [tvStatus, setTvStatus] = useState(null)
   const [localSignals, setLocalSignals] = useState([])
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/health`)
-      .then(r => r.json()).then(setTvStatus).catch(() => {})
     fetch(`${API_BASE}/api/signals`)
       .then(r => r.json()).then(d => setLocalSignals(d.signals || [])).catch(() => {})
   }, [])
@@ -87,7 +84,11 @@ export default function Dashboard() {
             {activeSignals.length}
           </div>
           <div className="stat-sub">
-            {tvStatus?.connected ? <span style={{ color: 'var(--green)' }}>● TradingView connected</span> : <span style={{ color: 'var(--red)' }}>● TradingView offline</span>}
+            {wsStatus === 'connected'
+              ? <span style={{ color: 'var(--green)' }}>● TradingView connected</span>
+              : wsStatus === 'connecting'
+              ? <span style={{ color: 'var(--gold)' }}>● Connecting…</span>
+              : <span style={{ color: 'var(--red)' }}>● TradingView offline</span>}
           </div>
         </div>
       </div>
