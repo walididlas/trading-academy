@@ -40,11 +40,63 @@ _last_signals: list[dict] = []
 
 # ── Auto-execution state ───────────────────────────────────────────────────────
 _auto_state: dict = {
-    "enabled":           True,
-    "daily_start_equity": None,
-    "last_date":         None,
-    "executed":          set(),   # f"{pair}_{YYYY-MM-DD_HH}" — one per pair per hour
+    "enabled":             True,
+    "daily_start_equity":  None,
+    "last_date":           None,
+    "executed":            set(),   # f"{pair}_{YYYY-MM-DD_HH}" — one per pair per hour
+    "consecutive_losses":  0,
+    "paused_reason":       None,    # None = active, str = paused with this reason
 }
+
+
+def record_trade_result(won: bool) -> dict:
+    """
+    Call after a position closes. Returns {"should_pause": bool, "reason": str}.
+    If 2 consecutive losses → pause auto-trading.
+    """
+    state = _auto_state
+    if won:
+        state["consecutive_losses"] = 0
+        return {"should_pause": False, "reason": ""}
+    else:
+        state["consecutive_losses"] += 1
+        if state["consecutive_losses"] >= 2 and state["paused_reason"] is None:
+            reason = (
+                f"2 consecutive losses this session. "
+                "Review setups before resuming."
+            )
+            state["paused_reason"] = reason
+            state["enabled"] = False
+            return {"should_pause": True, "reason": reason}
+        return {"should_pause": False, "reason": ""}
+
+
+def reset_session_losses() -> None:
+    """Call at each KZ open. Resets consecutive loss counter (new session = fresh start)."""
+    state = _auto_state
+    state["consecutive_losses"] = 0
+    if state["paused_reason"] and "consecutive" in state["paused_reason"]:
+        state["paused_reason"] = None
+        state["enabled"] = True
+
+
+def resume_auto_trading() -> None:
+    """Manual resume — clears paused_reason, resets counter, re-enables."""
+    state = _auto_state
+    state["paused_reason"] = None
+    state["consecutive_losses"] = 0
+    state["enabled"] = True
+
+
+def get_auto_state() -> dict:
+    """Return serialisable snapshot of auto-trade state."""
+    state = _auto_state
+    return {
+        "enabled":            state["enabled"],
+        "paused_reason":      state["paused_reason"],
+        "consecutive_losses": state["consecutive_losses"],
+        "daily_start_equity": state["daily_start_equity"],
+    }
 
 # ── Previous criteria state — for smart transition alerts ─────────────────────
 _last_criteria: dict[str, dict] = {}   # pair → criteria dict from last scan
@@ -650,6 +702,9 @@ async def _auto_execute(sig: dict, broadcast: Callable) -> None:
     today = now.date().isoformat()
     exec_key = f"{pair}_{today}_{now.hour}"
 
+    if state["paused_reason"] is not None:
+        return                          # paused (daily loss or consecutive losses)
+
     if exec_key in state["executed"]:
         return                          # already executed this pair this hour
 
@@ -688,6 +743,42 @@ async def _auto_execute(sig: dict, broadcast: Callable) -> None:
                     }
                 }))
             return
+
+        # ── News window block (±30 min around HIGH-impact event) ──────────────
+        try:
+            from calendar_fetcher import get_news_risk_for_pair
+            news_risk = get_news_risk_for_pair(pair, window_minutes=30)
+            if news_risk.get("level") == "HIGH":
+                evt = news_risk.get("next_event") or (news_risk.get("events") or [None])[0]
+                evt_title = evt.get("title", "HIGH news") if evt else "HIGH news"
+                await broadcast(json.dumps({
+                    "spread_blocked": {
+                        "pair":   pair,
+                        "reason": f"HIGH-impact news within 30 min — {evt_title}",
+                        "type":   "news",
+                    }
+                }))
+                return
+        except Exception:
+            pass
+
+        # ── Spread check ───────────────────────────────────────────────────────
+        try:
+            from trade_executor import check_spread
+            sp = await check_spread(pair)
+            if not sp["ok"]:
+                await broadcast(json.dumps({
+                    "spread_blocked": {
+                        "pair":         pair,
+                        "spread_pips":  sp["spread_pips"],
+                        "max_pips":     sp["max_pips"],
+                        "reason":       f"Spread {sp['spread_pips']} pips > max {sp['max_pips']} pips",
+                        "type":         "spread",
+                    }
+                }))
+                return
+        except Exception:
+            pass          # if spread check fails, proceed cautiously
 
         # ── Lot size — 1% risk of current equity ──────────────────────────────
         lots = _calc_lots(equity, 1.0, entry, sl, pair)

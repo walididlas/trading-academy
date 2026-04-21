@@ -43,6 +43,52 @@ async def _post(path: str, body: dict) -> dict:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+# ── Max spread per pair (in pips) ────────────────────────────────────────────
+MAX_SPREAD_PIPS: dict[str, float] = {
+    "XAUUSD": 5.0,
+    "EURUSD": 2.0,
+    "GBPUSD": 3.0,
+    "NZDJPY": 3.0,
+    "GBPJPY": 3.0,
+    "USDJPY": 2.0,
+    "AUDUSD": 2.0,
+    "USDCAD": 2.0,
+    "USDCHF": 2.0,
+}
+DEFAULT_MAX_SPREAD_PIPS = 3.0
+
+
+async def get_symbol_tick(symbol: str) -> dict:
+    """
+    Fetch live bid/ask for a symbol.
+    Returns dict with at least {bid, ask, spread} where spread is in price units.
+    """
+    return await _get(f"/symbols/{symbol.upper()}/currentPrice")
+
+
+async def check_spread(pair: str) -> dict:
+    """
+    Fetch live spread and compare against max allowed pips.
+    Returns:
+      { ok: bool, spread_pips: float, max_pips: float, bid: float, ask: float }
+    Raises on network error — caller must catch.
+    """
+    tick     = await get_symbol_tick(pair)
+    bid      = float(tick.get("bid") or tick.get("Bid") or 0)
+    ask      = float(tick.get("ask") or tick.get("Ask") or 0)
+    spread_price = abs(ask - bid)
+    pip      = _pip_size(pair)
+    spread_pips = round(spread_price / pip, 2)
+    max_pips = MAX_SPREAD_PIPS.get(pair.upper(), DEFAULT_MAX_SPREAD_PIPS)
+    return {
+        "ok":          spread_pips <= max_pips,
+        "spread_pips": spread_pips,
+        "max_pips":    max_pips,
+        "bid":         bid,
+        "ask":         ask,
+    }
+
+
 async def get_account_info() -> dict:
     """Return balance, equity, free margin."""
     return await _get("/account-information")

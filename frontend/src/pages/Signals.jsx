@@ -297,10 +297,11 @@ function ExpiryBadge({ expiresAt }) {
 }
 
 // ── STRONG signal card ────────────────────────────────────────────────────────
-function SignalCard({ signal, calcLots, riskPct, onPaperTrade, onSetAlert, newsRisk }) {
+function SignalCard({ signal, calcLots, riskPct, onPaperTrade, onSetAlert, onExecute, newsRisk, autoTradingPaused, spread }) {
   const [expanded, setExpanded] = useState(signal.grade === 'STRONG')
   const [paperDone, setPaperDone] = useState(false)
   const [alertSet, setAlertSet] = useState(false)
+  const [execState, setExecState] = useState(null)   // null | 'loading' | 'done' | 'error' | 'spread' | 'news'
 
   const isStrong  = signal.grade === 'STRONG'
   const isWatch   = signal.grade === 'WATCH'
@@ -325,6 +326,29 @@ function SignalCard({ signal, calcLots, riskPct, onPaperTrade, onSetAlert, newsR
     onSetAlert(signal)
     setAlertSet(true)
     setTimeout(() => setAlertSet(false), 3000)
+  }
+
+  async function handleExecute() {
+    if (execState === 'loading') return
+    setExecState('loading')
+    try {
+      const pos = calcLots ? calcLots(signal.entry, signal.sl, signal.pair) : null
+      const lots = pos?.lots ?? 0.01
+      const result = await onExecute(signal, lots)
+      if (result === true) {
+        setExecState('done')
+      } else if (result?.type === 'spread') {
+        setExecState('spread')
+      } else if (result?.type === 'news') {
+        setExecState('news')
+      } else {
+        setExecState('error')
+      }
+      setTimeout(() => setExecState(null), 6000)
+    } catch (_) {
+      setExecState('error')
+      setTimeout(() => setExecState(null), 6000)
+    }
   }
 
   return (
@@ -361,6 +385,17 @@ function SignalCard({ signal, calcLots, riskPct, onPaperTrade, onSetAlert, newsR
               <span style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 800, fontSize: '1.05rem' }}>
                 {signal.pair}
               </span>
+              {spread && (
+                <span style={{
+                  fontSize: '0.65rem', fontFamily: "'JetBrains Mono', monospace",
+                  fontWeight: 600, padding: '1px 6px', borderRadius: 4,
+                  background: spread.ok ? 'rgba(34,211,165,0.1)' : 'rgba(248,113,113,0.15)',
+                  color: spread.ok ? 'var(--green)' : 'var(--red)',
+                  border: `1px solid ${spread.ok ? 'rgba(34,211,165,0.25)' : 'rgba(248,113,113,0.3)'}`,
+                }} title={`Max: ${spread.max_pips} pips`}>
+                  {spread.spread_pips}p
+                </span>
+              )}
               {signal.direction && (
                 <span style={{
                   fontSize: '0.75rem', fontWeight: 700, padding: '2px 8px', borderRadius: 5,
@@ -463,33 +498,68 @@ function SignalCard({ signal, calcLots, riskPct, onPaperTrade, onSetAlert, newsR
 
           {/* Auto-trading indicator for STRONG signals */}
           {signal.grade === 'STRONG' && signal.entry != null && (
-            <div style={{
-              marginTop: 12, padding: '8px 12px', borderRadius: 8,
-              background: 'rgba(34,211,165,0.07)', border: '1px solid rgba(34,211,165,0.2)',
-              fontSize: '0.75rem', color: 'var(--green)',
-              display: 'flex', alignItems: 'center', gap: 6,
-            }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--green)', flexShrink: 0, animation: 'pulse 2s infinite' }} />
-              Auto-trading ON — will execute on MT5 when METAAPI_TOKEN is configured
-            </div>
+            autoTradingPaused ? (
+              <div style={{
+                marginTop: 12, padding: '8px 12px', borderRadius: 8,
+                background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.2)',
+                fontSize: '0.75rem', color: 'var(--red)',
+                display: 'flex', alignItems: 'center', gap: 6,
+              }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--red)', flexShrink: 0 }} />
+                Auto-trading PAUSED — use Resume button above to re-enable
+              </div>
+            ) : (
+              <div style={{
+                marginTop: 12, padding: '8px 12px', borderRadius: 8,
+                background: 'rgba(34,211,165,0.07)', border: '1px solid rgba(34,211,165,0.2)',
+                fontSize: '0.75rem', color: 'var(--green)',
+                display: 'flex', alignItems: 'center', gap: 6,
+              }}>
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--green)', flexShrink: 0, animation: 'pulse 2s infinite' }} />
+                Auto-trading ON — will execute on MT5 when METAAPI_TOKEN is configured
+              </div>
+            )
           )}
 
           {/* Action buttons */}
           {signal.entry != null && (
             <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
               <button
-                className="btn btn-secondary btn-sm"
-                style={{ flex: 1, minWidth: 120 }}
-                onClick={handlePaperTrade}
+                className="btn btn-sm"
+                style={{
+                  flex: 1, minWidth: 110,
+                  background: execState === 'done'   ? 'var(--green)'
+                    : (execState === 'error' || execState === 'spread' || execState === 'news') ? 'var(--red)'
+                    : execState === 'loading' ? 'var(--surface-3)'
+                    : 'var(--green)',
+                  color: execState === 'loading' ? 'var(--text-3)' : '#000',
+                  fontWeight: 700,
+                  opacity: execState === 'loading' ? 0.7 : 1,
+                  touchAction: 'manipulation',
+                }}
+                onClick={handleExecute}
+                disabled={execState === 'loading'}
               >
-                {paperDone ? '✓ Logged!' : '📋 Paper Trade This'}
+                {execState === 'loading' ? 'Sending…'
+                  : execState === 'done'   ? '✓ Placed!'
+                  : execState === 'spread' ? '⚠ Spread!'
+                  : execState === 'news'   ? '⚡ News!'
+                  : execState === 'error'  ? '✗ Failed'
+                  : '▶ Execute'}
               </button>
               <button
                 className="btn btn-secondary btn-sm"
-                style={{ flex: 1, minWidth: 120 }}
+                style={{ flex: 1, minWidth: 110 }}
+                onClick={handlePaperTrade}
+              >
+                {paperDone ? '✓ Logged!' : '📋 Paper Trade'}
+              </button>
+              <button
+                className="btn btn-secondary btn-sm"
+                style={{ flex: 1, minWidth: 110 }}
                 onClick={handleSetAlert}
               >
-                {alertSet ? '✓ Alert Set!' : '🔔 Alert at Entry'}
+                {alertSet ? '✓ Alert Set!' : '🔔 Alert'}
               </button>
             </div>
           )}
@@ -534,13 +604,14 @@ function MonitoringRow({ signal }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function Signals() {
-  const { signals: ctxSignals, news, wsStatus, permission, requestPermission } = useAlerts()
+  const { signals: ctxSignals, news, wsStatus, permission, requestPermission, autoTradingPaused, setAutoTradingPaused } = useAlerts()
   const { balance, setBalance, riskPct, setRiskPct, calcLots, hasBalance } = useAccount()
   const { getNewsRiskForPair } = useCalendar()
   const [signals, setSignals] = useState([])
   const [loading, setLoading] = useState(true)
   const [lastRefresh, setLastRefresh] = useState(null)
   const [showAccountModal, setShowAccountModal] = useState(false)
+  const [spreads, setSpreads] = useState({})   // { XAUUSD: { spread_pips, max_pips, ok } }
   const priceAlerts = useRef({})  // { pair: entry }
 
   // Seed from REST, then WS takes over
@@ -549,6 +620,39 @@ export default function Signals() {
       .then(r => r.json())
       .then(d => { setSignals(d.signals || []); setLastRefresh(new Date()); setLoading(false) })
       .catch(() => { setLoading(false) })
+  }, [])
+
+  // Hydrate auto-trade paused state from backend
+  useEffect(() => {
+    fetch(`${API_BASE}/api/trade/status`)
+      .then(r => r.json())
+      .then(d => { if (d.ok && d.paused_reason) setAutoTradingPaused(true) })
+      .catch(() => {})
+  }, [])
+
+  // Poll live spreads every 30s for active signal pairs
+  useEffect(() => {
+    const PAIRS_TO_WATCH = ['XAUUSD', 'EURUSD', 'GBPUSD', 'NZDJPY']
+    async function fetchSpreads() {
+      const results = await Promise.allSettled(
+        PAIRS_TO_WATCH.map(p =>
+          fetch(`${API_BASE}/api/spread/${p}`).then(r => r.json()).then(d => [p, d])
+        )
+      )
+      setSpreads(prev => {
+        const next = { ...prev }
+        results.forEach(r => {
+          if (r.status === 'fulfilled') {
+            const [pair, data] = r.value
+            if (data.ok) next[pair] = data
+          }
+        })
+        return next
+      })
+    }
+    fetchSpreads()
+    const interval = setInterval(fetchSpreads, 30000)
+    return () => clearInterval(interval)
   }, [])
 
   useEffect(() => {
@@ -628,6 +732,38 @@ export default function Signals() {
     } catch (_) {}
   }
 
+  async function handleExecute(signal, lots) {
+    try {
+      const res = await fetch(`${API_BASE}/api/trade/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pair:      signal.pair,
+          direction: signal.direction,
+          lots,
+          entry:     signal.entry,
+          sl:        signal.sl,
+          tp:        signal.tp1,
+        }),
+      })
+      const data = await res.json()
+      if (data.ok) return true
+      // Return the block type so the card can show the right label
+      return { type: data.type ?? 'error', error: data.error }
+    } catch (_) {
+      return { type: 'error' }
+    }
+  }
+
+  async function handleResume() {
+    try {
+      await fetch(`${API_BASE}/api/trade/resume`, { method: 'POST' })
+      setAutoTradingPaused(false)
+    } catch (_) {
+      setAutoTradingPaused(false)  // optimistic
+    }
+  }
+
   const activeSignals   = signals.filter(s => s.grade === 'STRONG' || s.grade === 'WATCH')
   const monitoring      = signals.filter(s => s.grade === 'MONITORING')
   const utcMins         = new Date().getUTCHours() * 60 + new Date().getUTCMinutes()
@@ -692,6 +828,30 @@ export default function Signals() {
 
       <KillZoneClock />
 
+      {/* Auto-trading paused banner */}
+      {autoTradingPaused && (
+        <div style={{
+          background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.4)',
+          borderRadius: 'var(--r)', padding: '12px 16px', marginBottom: 14,
+          display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+        }}>
+          <span style={{ fontSize: '1.2rem' }}>🛑</span>
+          <div style={{ flex: 1, minWidth: 180 }}>
+            <div style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--red)' }}>Auto-Trading Paused</div>
+            <div style={{ fontSize: '0.78rem', color: 'var(--text-3)', marginTop: 2 }}>
+              2 consecutive losses this session. Review your setups before resuming.
+            </div>
+          </div>
+          <button
+            className="btn btn-sm"
+            style={{ background: 'var(--green)', color: '#000', fontWeight: 700, touchAction: 'manipulation', minHeight: 44, minWidth: 80 }}
+            onClick={handleResume}
+          >
+            Resume
+          </button>
+        </div>
+      )}
+
       {lastRefresh && (
         <div style={{ fontSize: '0.68rem', color: 'var(--text-4)', marginBottom: 12 }}>
           Last scan {lastRefresh.toLocaleTimeString('fr-MA', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Casablanca' })} Morocco · Scans every 2 min
@@ -715,7 +875,10 @@ export default function Signals() {
                   riskPct={riskPct}
                   onPaperTrade={handlePaperTrade}
                   onSetAlert={handleSetAlert}
+                  onExecute={handleExecute}
                   newsRisk={getNewsRiskForPair(s.pair)}
+                  autoTradingPaused={autoTradingPaused}
+                  spread={spreads[s.pair] ?? null}
                 />
               ))}
             </div>

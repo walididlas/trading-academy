@@ -95,6 +95,12 @@ async def _kz_open_scheduler():
 
         if open_name and open_name != last_open:
             last_open = open_name
+            # Reset consecutive-loss counter at each new session
+            try:
+                from scanner import reset_session_losses
+                reset_session_losses()
+            except Exception:
+                pass
             await manager.broadcast(json.dumps({
                 "killzone_open": open_name,
                 "morocco_time":  open_mor,
@@ -161,11 +167,7 @@ async def _position_monitor():
                     profit     = pos.get("profit") or pos.get("unrealizedProfit") or 0
                     pair       = pos.get("symbol", "")
                     direction  = pos.get("type", "").lower()  # buy/sell
-                    # Determine if SL or TP based on profit sign and direction
-                    if direction == "buy":
-                        reason = "tp" if profit > 0 else "sl"
-                    else:
-                        reason = "tp" if profit > 0 else "sl"
+                    reason     = "tp" if float(profit) > 0 else "sl"
 
                     await manager.broadcast(json.dumps({
                         "position_closed": {
@@ -175,6 +177,19 @@ async def _position_monitor():
                             "pnl":       round(float(profit), 2),
                         }
                     }))
+
+                    # Consecutive-loss guard
+                    try:
+                        from scanner import record_trade_result
+                        pause_info = record_trade_result(float(profit) > 0)
+                        if pause_info["should_pause"]:
+                            await manager.broadcast(json.dumps({
+                                "auto_trade_paused": {
+                                    "reason": f"⚠️ Auto-trading paused — 2 consecutive losses. {pause_info['reason']} Review before resuming."
+                                }
+                            }))
+                    except Exception:
+                        pass
 
             prev_positions = current_ids
 
@@ -335,11 +350,35 @@ class BreakevenRequest(BaseModel):
 
 @app.post("/api/trade/execute")
 async def execute_trade(req: TradeRequest):
-    """Place a market order on MT5 via MetaApi."""
+    """Place a market order on MT5 via MetaApi, after spread and news checks."""
     if not os.getenv("METAAPI_TOKEN"):
         return {"ok": False, "error": "METAAPI_TOKEN not configured"}
     try:
-        from trade_executor import place_order
+        from trade_executor import place_order, check_spread
+        from calendar_fetcher import get_news_risk_for_pair
+
+        # ── News window block ──────────────────────────────────────────────────
+        news_risk = get_news_risk_for_pair(req.pair, window_minutes=30)
+        if news_risk.get("level") == "HIGH":
+            evt       = news_risk.get("next_event") or (news_risk.get("events") or [None])[0]
+            evt_title = evt.get("title", "HIGH news") if evt else "HIGH news"
+            return {
+                "ok":     False,
+                "error":  f"HIGH-impact news within 30 min — {evt_title}",
+                "type":   "news",
+            }
+
+        # ── Spread check ───────────────────────────────────────────────────────
+        sp = await check_spread(req.pair)
+        if not sp["ok"]:
+            return {
+                "ok":          False,
+                "error":       f"Spread too wide — {sp['spread_pips']} pips (max {sp['max_pips']})",
+                "spread_pips": sp["spread_pips"],
+                "max_pips":    sp["max_pips"],
+                "type":        "spread",
+            }
+
         result = await place_order(
             symbol=req.pair, direction=req.direction,
             lots=req.lots, entry=req.entry, sl=req.sl, tp=req.tp,
@@ -369,6 +408,35 @@ async def move_to_breakeven(req: BreakevenRequest):
         return {"ok": True, "result": result}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+@app.get("/api/spread/{pair}")
+async def get_spread(pair: str):
+    """Live spread for a pair in pips, compared against max allowed."""
+    if not os.getenv("METAAPI_TOKEN"):
+        return {"ok": False, "error": "METAAPI_TOKEN not configured"}
+    try:
+        from trade_executor import check_spread
+        result = await check_spread(pair.upper())
+        return {"ok": True, **result, "pair": pair.upper()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/trade/resume")
+async def resume_auto_trading():
+    """Manually re-enable auto-trading after a consecutive-loss pause."""
+    from scanner import resume_auto_trading as _resume
+    _resume()
+    await manager.broadcast(json.dumps({"auto_trade_resumed": {"reason": "Manually resumed by user"}}))
+    return {"ok": True}
+
+
+@app.get("/api/trade/status")
+async def get_auto_trade_status():
+    """Return current auto-trade state (enabled, paused_reason, consecutive_losses)."""
+    from scanner import get_auto_state
+    return {"ok": True, **get_auto_state()}
 
 
 @app.get("/api/trade/positions")

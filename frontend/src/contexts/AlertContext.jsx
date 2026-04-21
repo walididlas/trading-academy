@@ -83,6 +83,7 @@ export function AlertProvider({ children }) {
     typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
   )
   const [wsStatus, setWsStatus] = useState('connecting')
+  const [autoTradingPaused, setAutoTradingPaused] = useState(false)
   const idRef = useRef(0)
   const timersRef = useRef({})
   const signalsRef = useRef([])  // always-current ref for WS callback
@@ -261,12 +262,32 @@ export function AlertProvider({ children }) {
               addToast({ type: 'warning', title: `⚠ MT5 Error — ${f.pair}`, body: f.error })
             }
 
-            // ── Daily loss limit hit ─────────────────────────────────────────
+            // ── Daily loss limit or consecutive losses paused ────────────────
             if (data.auto_trade_paused) {
+              setAutoTradingPaused(true)
               const title = '🛑 Auto-Trading Paused'
               const body  = data.auto_trade_paused.reason || '5% daily loss limit reached'
               addToast({ type: 'warning', title, body })
               showNativeNotif(title, body, 'auto-paused')
+            }
+
+            // ── Spread / news block ──────────────────────────────────────────
+            if (data.spread_blocked) {
+              const b = data.spread_blocked
+              const title = b.type === 'news'
+                ? `⚡ Trade blocked — HIGH news on ${b.pair}`
+                : `⚠️ Trade blocked — spread too wide on ${b.pair}`
+              const body = b.type === 'news'
+                ? b.reason
+                : `Current: ${b.spread_pips} pips · Max: ${b.max_pips} pips`
+              addToast({ type: 'warning', title, body })
+              showNativeNotif(title, body, `spread-${b.pair}`)
+            }
+
+            // ── Auto-trading manually resumed ────────────────────────────────
+            if (data.auto_trade_resumed) {
+              setAutoTradingPaused(false)
+              addToast({ type: 'killzone', title: '✅ Auto-Trading Resumed', body: 'Bot is active again — monitoring for STRONG signals' })
             }
 
             // ── Position closed (SL or TP hit) ──────────────────────────────
@@ -343,7 +364,7 @@ export function AlertProvider({ children }) {
   }, [])
 
   return (
-    <AlertContext.Provider value={{ signals, news, toasts, dismiss, permission, requestPermission, wsStatus, alertHistory, unreadCount, markRead }}>
+    <AlertContext.Provider value={{ signals, news, toasts, dismiss, permission, requestPermission, wsStatus, alertHistory, unreadCount, markRead, autoTradingPaused, setAutoTradingPaused }}>
       {children}
     </AlertContext.Provider>
   )
