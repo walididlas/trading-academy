@@ -16,7 +16,7 @@ self.addEventListener('push', e => {
   const options = {
     body: data.body ?? '',
     icon: '/icon-192.png',
-    badge: '/icon-96.png',
+    badge: '/icon-192.png',
     data: { url: data.url ?? '/signals' },
     vibrate: [200, 100, 200, 100, 200],
     requireInteraction: data.type === 'signal',  // stay visible for signals

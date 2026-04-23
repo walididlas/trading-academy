@@ -82,6 +82,12 @@ async def _kz_open_scheduler():
                     "pairs":       ["XAUUSD", "EURUSD", "GBPUSD", "GBPJPY"],
                 }
             }))
+            from push_notifier import send_push
+            asyncio.create_task(send_push(
+                title=f"⏰ {warn_name} in 5 minutes",
+                body=f"{warn_mor} Morocco · Prepare setups on XAUUSD, EURUSD, GBPUSD, GBPJPY",
+                tag="kz-warning", type_="killzone", url="/signals",
+            ))
         elif not warn_name:
             last_warning = None
 
@@ -106,6 +112,12 @@ async def _kz_open_scheduler():
                 "morocco_time":  open_mor,
                 "pairs":         ["XAUUSD", "EURUSD", "GBPUSD", "GBPJPY"],
             }))
+            from push_notifier import send_push
+            asyncio.create_task(send_push(
+                title=f"🎯 {open_name} NOW OPEN",
+                body=f"{open_mor} Morocco · ICC setups active on XAUUSD, EURUSD, GBPUSD, GBPJPY",
+                tag="killzone", type_="killzone", url="/signals",
+            ))
         elif not open_name:
             last_open = None
 
@@ -137,6 +149,13 @@ async def _news_warning_scheduler():
                             "impact":     "HIGH",
                         }
                     }))
+                    cur = "/".join(nxt.get("currencies", []))
+                    from push_notifier import send_push
+                    asyncio.create_task(send_push(
+                        title=f"⚡ HIGH News in ~{round(mins_until)} min{f' — {cur}' if cur else ''}",
+                        body=nxt.get("title", "High-impact event approaching"),
+                        tag=f"news-warn-{key[:30]}", type_="warning", url="/signals",
+                    ))
             else:
                 last_warned = None
         except Exception:
@@ -181,6 +200,13 @@ async def _weekly_report_scheduler():
                 _weekly_reports.pop(0)
 
             await manager.broadcast(json.dumps({"weekly_report": stats}))
+            icon = "🏆" if stats["verdict"] == "Strong week" else "📉" if stats["verdict"] == "Rough week" else "➖"
+            from push_notifier import send_push
+            asyncio.create_task(send_push(
+                title=f"{icon} Weekly Report — {stats['verdict']}",
+                body=f"{stats['total_trades']} trades · {stats['win_rate']}% WR · {'+'if stats['total_pnl']>=0 else ''}${stats['total_pnl']}",
+                tag="weekly-report", type_="signal" if stats["total_pnl"] >= 0 else "warning", url="/",
+            ))
         except Exception:
             pass
 
@@ -216,17 +242,30 @@ async def _close_and_broadcast(pos: dict, signal_snapshot) -> None:
     except Exception:
         pass   # exit_price stays None — frontend handles gracefully
 
+    dir_str = "long" if direction == "buy" else "short"
+    pnl_r   = round(profit, 2)
     await manager.broadcast(json.dumps({
         "position_closed": {
             "pair":            pair,
-            "direction":       "long" if direction == "buy" else "short",
+            "direction":       dir_str,
             "reason":          reason,
-            "pnl":             round(profit, 2),
+            "pnl":             pnl_r,
             "signal_snapshot": signal_snapshot,
             "close_ts":        now.isoformat(),
             "exit_price":      exit_price,   # float | None
         }
     }))
+    # Push notification — fires even when browser is closed
+    icon   = "🎯" if reason == "tp" else "🛑"
+    why    = "Target hit" if reason == "tp" else "Stop loss hit"
+    arrow  = "▲" if dir_str == "long" else "▼"
+    pnl_s  = f"+${pnl_r}" if pnl_r >= 0 else f"-${abs(pnl_r)}"
+    from push_notifier import send_push
+    asyncio.create_task(send_push(
+        title=f"{icon} {pair} — {why}",
+        body=f"{arrow} {dir_str.upper()} · P&L {pnl_s}",
+        tag=f"closed-{pair}", type_="signal" if reason == "tp" else "warning", url="/signals",
+    ))
 
 
 async def _position_monitor():
@@ -695,6 +734,50 @@ async def get_open_positions():
         return {"ok": True, "positions": positions}
     except Exception as e:
         return {"ok": False, "positions": [], "error": str(e)}
+
+
+# ── Web Push endpoints ────────────────────────────────────────────────────────
+
+@app.get("/api/push/vapid-public-key")
+async def get_vapid_public_key():
+    """Return the VAPID public key so the browser can subscribe to push."""
+    key = os.getenv("VAPID_PUBLIC_KEY", "")
+    if not key:
+        return {"ok": False, "error": "VAPID_PUBLIC_KEY not configured on server"}
+    return {"ok": True, "publicKey": key}
+
+
+class PushSubscription(BaseModel):
+    endpoint: str
+    keys: dict
+    expirationTime: float | None = None
+
+
+@app.post("/api/push/subscribe")
+async def push_subscribe(sub: PushSubscription):
+    """Store a browser push subscription."""
+    from push_notifier import add_subscription, get_subscription_count
+    add_subscription(sub.model_dump())
+    return {"ok": True, "subscribers": get_subscription_count()}
+
+
+@app.delete("/api/push/subscribe")
+async def push_unsubscribe(sub: PushSubscription):
+    """Remove a push subscription."""
+    from push_notifier import remove_subscription
+    remove_subscription(sub.endpoint)
+    return {"ok": True}
+
+
+@app.get("/api/push/status")
+async def push_status():
+    """Return push system status (useful for debugging)."""
+    from push_notifier import get_subscription_count
+    return {
+        "ok":          True,
+        "subscribers": get_subscription_count(),
+        "vapid_configured": bool(os.getenv("VAPID_PUBLIC_KEY")),
+    }
 
 
 # ── WebSocket ──────────────────────────────────────────────────────────────────

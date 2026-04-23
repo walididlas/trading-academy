@@ -825,6 +825,16 @@ async def _auto_execute(sig: dict, broadcast: Callable) -> None:
                 "order_id":  order_id,
             }
         }))
+        try:
+            from push_notifier import send_push
+            _arrow = "▲ BUY" if sig["direction"] == "long" else "▼ SELL"
+            asyncio.create_task(send_push(
+                title=f"✅ Trade Placed — {pair} {_arrow}",
+                body=f"{lots} lots @ {entry} · SL {sl} · TP1 {tp1}",
+                tag=f"exec-{pair}", type_="signal", url="/signals",
+            ))
+        except Exception:
+            pass
 
     except Exception as exc:
         await broadcast(json.dumps({
@@ -875,6 +885,17 @@ async def run_scanner(broadcast: Callable, get_ohlcv_fn: Callable) -> None:
                 if sig.get("grade") == "STRONG" and prev_grade != "STRONG":
                     strong_alerts.append(sig)
                     asyncio.create_task(_auto_execute(sig, broadcast))
+                    try:
+                        from push_notifier import send_push
+                        _dir = sig.get("direction", "long")
+                        _arrow = "▲" if _dir == "long" else "▼"
+                        asyncio.create_task(send_push(
+                            title=f"🔥 {pair} {_arrow} STRONG Signal ({curr_score}pts)",
+                            body=f"Entry {sig.get('entry')} · SL {sig.get('sl')} · TP1 {sig.get('tp1')}",
+                            tag=f"signal-{pair}", type_="signal", url="/signals",
+                        ))
+                    except Exception:
+                        pass
 
                 # ── Score crosses 70 for the first time (WATCH alert) ──────────
                 elif curr_score >= 70 and prev_score < 70 and sig.get("grade") != "STRONG":
@@ -886,6 +907,17 @@ async def run_scanner(broadcast: Callable, get_ohlcv_fn: Callable) -> None:
                             "reason":    sig.get("reason", ""),
                         }
                     })
+                    try:
+                        from push_notifier import send_push
+                        _dir = sig.get("direction", "long")
+                        _arrow = "▲" if _dir == "long" else "▼"
+                        asyncio.create_task(send_push(
+                            title=f"👀 {pair} {_arrow} Watch Signal ({curr_score}pts)",
+                            body=sig.get("reason", "Score crossed 70 — monitor for entry"),
+                            tag=f"watch-{pair}", type_="killzone", url="/signals",
+                        ))
+                    except Exception:
+                        pass
 
                 # ── Market structure break (criterion just turned True) ─────────
                 ms_prev = prev_crit.get("market_structure", {}).get("triggered", False)

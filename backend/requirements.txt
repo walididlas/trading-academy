@@ -9,3 +9,4 @@ python-dotenv==1.0.1
 yfinance==0.2.54
 pandas>=2.0.0
 numpy>=1.26.0
+pywebpush>=2.0.0

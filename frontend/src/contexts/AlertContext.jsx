@@ -1,6 +1,48 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react'
 import { API_BASE, WS_BASE } from '../config'
 
+// ── Web Push helpers ─────────────────────────────────────────────────────────
+function _urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
+  const base64  = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
+  const raw     = atob(base64)
+  const output  = new Uint8Array(raw.length)
+  for (let i = 0; i < raw.length; i++) output[i] = raw.charCodeAt(i)
+  return output
+}
+
+async function _postSubscription(sub) {
+  try {
+    await fetch(`${API_BASE}/api/push/subscribe`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(sub.toJSON()),
+    })
+  } catch (_) {}
+}
+
+async function _subscribeToPush(registration) {
+  try {
+    const vapidKey = import.meta.env.VITE_VAPID_PUBLIC_KEY
+    if (!vapidKey || !registration.pushManager) return
+
+    // Reuse existing subscription if present — just re-register with backend
+    const existing = await registration.pushManager.getSubscription()
+    if (existing) {
+      await _postSubscription(existing)
+      return
+    }
+
+    const sub = await registration.pushManager.subscribe({
+      userVisibleOnly:      true,
+      applicationServerKey: _urlBase64ToUint8Array(vapidKey),
+    })
+    await _postSubscription(sub)
+  } catch (_) {
+    // PushManager not supported, or permission denied — silent fallback
+  }
+}
+
 // Pair → currencies that affect it (mirrors backend PAIR_CURRENCIES)
 const PAIR_CURRENCIES = {
   EURUSD: ['EUR', 'USD'], GBPUSD: ['GBP', 'USD'], XAUUSD: ['USD'],
@@ -114,11 +156,17 @@ export function AlertProvider({ children }) {
   const timersRef = useRef({})
   const signalsRef = useRef([])  // always-current ref for WS callback
 
-  // Register service worker once
+  // Register service worker and subscribe to Web Push once
   useEffect(() => {
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('/sw.js').catch(() => {})
-    }
+    if (!('serviceWorker' in navigator)) return
+    navigator.serviceWorker.register('/sw.js')
+      .then(reg => {
+        // If notification permission already granted, subscribe to push immediately
+        if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+          _subscribeToPush(reg)
+        }
+      })
+      .catch(() => {})
   }, [])
 
   const addToast = useCallback((toast) => {
@@ -147,6 +195,10 @@ export function AlertProvider({ children }) {
     if (typeof Notification === 'undefined') return 'unsupported'
     const result = await Notification.requestPermission()
     setPermission(result)
+    // If granted, also subscribe to Web Push for background notifications
+    if (result === 'granted' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.ready.then(reg => _subscribeToPush(reg)).catch(() => {})
+    }
     return result
   }, [])
 
