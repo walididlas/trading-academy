@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react'
 
-const PAIRS = ['XAUUSD', 'EURUSD', 'GBPUSD', 'NZDJPY']
+const PAIRS = ['XAUUSD', 'EURUSD', 'GBPUSD', 'GBPJPY']
 
 const PAIR_CURRENCIES = {
-  XAUUSD: ['USD'], EURUSD: ['EUR','USD'], GBPUSD: ['GBP','USD'], NZDJPY: ['NZD','JPY'],
+  XAUUSD: ['USD'], EURUSD: ['EUR','USD'], GBPUSD: ['GBP','USD'], GBPJPY: ['GBP','JPY'],
 }
 
 // Traffic light config

@@ -242,7 +242,7 @@ def get_next_event_for_pair(pair: str) -> Optional[dict]:
 
 def get_cached_calendar() -> dict:
     """Full calendar payload for REST endpoint."""
-    TRACKED_PAIRS = ["XAUUSD", "EURUSD", "GBPUSD", "NZDJPY"]
+    TRACKED_PAIRS = ["XAUUSD", "EURUSD", "GBPUSD", "GBPJPY"]
     return {
         "upcoming_30m":   get_upcoming_events(30),
         "upcoming_60m":   get_upcoming_events(60),

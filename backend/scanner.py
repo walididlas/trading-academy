@@ -31,7 +31,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Callable
 
 # ── Config ────────────────────────────────────────────────────────────────────
-PAIRS         = ["XAUUSD", "EURUSD", "GBPUSD", "NZDJPY"]
+PAIRS         = ["XAUUSD", "EURUSD", "GBPUSD", "GBPJPY"]
 SCAN_INTERVAL = 120       # seconds
 NEWS_WINDOW   = 20 * 60   # 20 min window for high-impact news penalty
 SIGNAL_EXPIRY = 4 * 60 * 60

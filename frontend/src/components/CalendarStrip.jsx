@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react'
 
-const PAIRS = ['XAUUSD', 'EURUSD', 'GBPUSD', 'NZDJPY']
+const PAIRS = ['XAUUSD', 'EURUSD', 'GBPUSD', 'GBPJPY']
 
 const TL = {
   HIGH:   { dot: '#ef4444', color: 'var(--red)',  label: 'HIGH',  bg: 'rgba(248,113,113,0.10)', border: 'rgba(248,113,113,0.3)' },

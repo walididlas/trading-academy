@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { API_BASE } from '../config'
 
-const PAIRS = ['XAUUSD', 'EURUSD', 'GBPUSD', 'NZDJPY']
+const PAIRS = ['XAUUSD', 'EURUSD', 'GBPUSD', 'GBPJPY']
 
 // ── Equity curve SVG ──────────────────────────────────────────────────────────
 function EquityCurveSVG({ points, width = 280, height = 80 }) {
@@ -267,7 +267,7 @@ export default function Backtest() {
   const run = useCallback(() => {
     setLoading(true)
     setError(null)
-    const url = `${API_BASE}/api/backtest?days=${days}&min_score=${minScore}&pairs=XAUUSD,EURUSD,GBPUSD,NZDJPY`
+    const url = `${API_BASE}/api/backtest?days=${days}&min_score=${minScore}&pairs=XAUUSD,EURUSD,GBPUSD,GBPJPY`
     fetch(url)
       .then(r => r.json())
       .then(d => { setData(d); setLoading(false) })

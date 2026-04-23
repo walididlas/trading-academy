@@ -21,7 +21,7 @@ from scanner import (
     _swing_highs, _swing_lows,
 )
 
-PAIRS = ["XAUUSD", "EURUSD", "GBPUSD", "NZDJPY"]
+PAIRS = ["XAUUSD", "EURUSD", "GBPUSD", "GBPJPY"]
 
 # ── KZ from bar timestamp ──────────────────────────────────────────────────────
 def _bar_in_kz(bar: dict) -> bool:

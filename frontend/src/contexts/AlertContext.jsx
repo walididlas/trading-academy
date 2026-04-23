@@ -4,7 +4,7 @@ import { API_BASE, WS_BASE } from '../config'
 // Pair → currencies that affect it (mirrors backend PAIR_CURRENCIES)
 const PAIR_CURRENCIES = {
   EURUSD: ['EUR', 'USD'], GBPUSD: ['GBP', 'USD'], XAUUSD: ['USD'],
-  NZDJPY: ['NZD', 'JPY'], GBPJPY: ['GBP', 'JPY'], USDJPY: ['USD', 'JPY'],
+  GBPJPY: ['GBP', 'JPY'], USDJPY: ['USD', 'JPY'],
   AUDUSD: ['AUD', 'USD'], USDCAD: ['USD', 'CAD'], USDCHF: ['USD', 'CHF'],
 }
 
@@ -71,6 +71,32 @@ function getOpenTrades() {
   } catch {
     return []
   }
+}
+
+// ── Helpers for auto-journal entries ────────────────────────────────────────
+function inferSession(isoTs) {
+  try {
+    const d = new Date(isoTs)
+    const t = d.getUTCHours() * 60 + d.getUTCMinutes()
+    if (t >= 9 * 60 && t < 12 * 60)           return 'London'
+    if (t >= 14 * 60 + 30 && t < 17 * 60 + 30) return 'NY'
+    return 'Other'
+  } catch { return 'Other' }
+}
+
+function gradeFromScore(score) {
+  if (score == null) return 'F'
+  if (score >= 80)   return 'A'
+  if (score >= 70)   return 'B'
+  if (score >= 60)   return 'C'
+  return 'F'
+}
+
+function getPipSize(pair) {
+  if (!pair)             return 0.0001
+  if (pair === 'XAUUSD') return 0.1
+  if (pair.includes('JPY')) return 0.01
+  return 0.0001
 }
 
 export function AlertProvider({ children }) {
@@ -340,6 +366,52 @@ export function AlertProvider({ children }) {
 
                 const existing = JSON.parse(localStorage.getItem('session_replays') || '[]')
                 localStorage.setItem('session_replays', JSON.stringify([replay, ...existing].slice(0, 200)))
+              } catch (_) {}
+
+              // ── Auto-journal entry ───────────────────────────────────────────
+              try {
+                const snap  = c.signal_snapshot
+                const score = snap?.score ?? null
+                let pips = ''
+                if (snap?.entry != null && c.exit_price != null) {
+                  const raw = (c.exit_price - snap.entry) / getPipSize(c.pair)
+                  pips = (c.direction === 'long' ? raw : -raw).toFixed(1)
+                }
+                const journalEntry = {
+                  id:           `auto_${Date.now()}`,
+                  date:         (c.close_ts ?? new Date().toISOString()).slice(0, 10),
+                  pair:         c.pair,
+                  direction:    c.direction,
+                  session:      inferSession(c.close_ts),
+                  entry:        snap?.entry?.toString() ?? '',
+                  sl:           snap?.sl?.toString() ?? '',
+                  tp:           snap?.tp1?.toString() ?? '',
+                  exitPrice:    c.exit_price?.toString() ?? '',
+                  lotSize:      '',
+                  result:       c.reason === 'tp' ? 'win' : 'loss',
+                  pips,
+                  pnl:          c.pnl?.toString() ?? '',
+                  rr:           '',
+                  kz:           snap?.criteria?.kill_zone?.triggered ?? false,
+                  trendAligned: snap?.criteria?.ema50?.triggered ?? false,
+                  iccValid:     (score ?? 0) >= 60,
+                  grade:        gradeFromScore(score),
+                  reasoning:    `Auto-logged: ${c.reason === 'tp' ? 'Target hit' : 'Stop loss hit'}. Score: ${score ?? 'N/A'}`,
+                  signalScore:  score,
+                  signalGrade:  snap?.grade ?? null,
+                  auto:         true,
+                }
+                const existingJ = JSON.parse(localStorage.getItem('trading_journal') || '[]')
+                const cutoff    = Date.now() - 5 * 60 * 1000
+                const isDup     = existingJ.some(t =>
+                  t.auto && t.pair === journalEntry.pair &&
+                  t.date === journalEntry.date &&
+                  t.direction === journalEntry.direction &&
+                  parseInt(t.id?.replace('auto_', '') ?? '0', 10) > cutoff
+                )
+                if (!isDup) {
+                  localStorage.setItem('trading_journal', JSON.stringify([journalEntry, ...existingJ]))
+                }
               } catch (_) {}
             }
 

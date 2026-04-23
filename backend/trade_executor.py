@@ -278,6 +278,8 @@ def calc_lots(balance: float, risk_pct: float, entry: float, sl: float, pair: st
 
     if pair == "XAUUSD":
         pip_val = 10.0       # $10 per pip per lot
+    elif pair == "GBPJPY":
+        pip_val = 7.0        # $7 per pip per lot (user-specified)
     elif "JPY" in pair:
         pip_val = 6.67       # approx $1000 / 150
     else:

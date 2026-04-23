@@ -9,7 +9,7 @@ import NewsFeed from '../components/NewsFeed'
 import NewsShield from '../components/NewsShield'
 import CalendarStrip from '../components/CalendarStrip'
 
-const PAIRS = ['XAUUSD', 'EURUSD', 'GBPUSD', 'NZDJPY']
+const PAIRS = ['XAUUSD', 'EURUSD', 'GBPUSD', 'GBPJPY']
 
 // ── Morocco Kill Zone clock ───────────────────────────────────────────────────
 function KillZoneClock() {
@@ -633,7 +633,7 @@ export default function Signals() {
 
   // Poll live spreads every 30s for active signal pairs
   useEffect(() => {
-    const PAIRS_TO_WATCH = ['XAUUSD', 'EURUSD', 'GBPUSD', 'NZDJPY']
+    const PAIRS_TO_WATCH = ['XAUUSD', 'EURUSD', 'GBPUSD', 'GBPJPY']
     async function fetchSpreads() {
       const results = await Promise.allSettled(
         PAIRS_TO_WATCH.map(p =>

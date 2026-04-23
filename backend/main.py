@@ -79,7 +79,7 @@ async def _kz_open_scheduler():
                     "name":        warn_name,
                     "morocco_time": warn_mor,
                     "opens_in":    "5 minutes",
-                    "pairs":       ["XAUUSD", "EURUSD", "GBPUSD", "NZDJPY"],
+                    "pairs":       ["XAUUSD", "EURUSD", "GBPUSD", "GBPJPY"],
                 }
             }))
         elif not warn_name:
@@ -104,7 +104,7 @@ async def _kz_open_scheduler():
             await manager.broadcast(json.dumps({
                 "killzone_open": open_name,
                 "morocco_time":  open_mor,
-                "pairs":         ["XAUUSD", "EURUSD", "GBPUSD", "NZDJPY"],
+                "pairs":         ["XAUUSD", "EURUSD", "GBPUSD", "GBPJPY"],
             }))
         elif not open_name:
             last_open = None
@@ -185,10 +185,54 @@ async def _weekly_report_scheduler():
             pass
 
 
+async def _close_and_broadcast(pos: dict, signal_snapshot) -> None:
+    """
+    Fetch actual exit price from MetaApi deal history, then broadcast
+    position_closed with full detail. Runs as a fire-and-forget task so
+    the position monitor loop is never blocked by the network call.
+    """
+    from datetime import timedelta
+    from trade_executor import get_deals_for_range
+
+    pair      = pos.get("symbol", "")
+    profit    = float(pos.get("profit") or pos.get("unrealizedProfit") or 0)
+    direction = pos.get("type", "").lower()
+    reason    = "tp" if profit > 0 else "sl"
+    now       = datetime.now(timezone.utc)
+
+    # ── Look up actual exit price from deal history (last 5 min) ─────────────
+    exit_price = None
+    try:
+        deals = await get_deals_for_range(now - timedelta(minutes=5), now)
+        pair_deals = [
+            d for d in deals
+            if d.get("symbol", "").upper() == pair.upper()
+            and float(d.get("profit", 0)) != 0   # skip commission entries
+        ]
+        if pair_deals:
+            pair_deals.sort(key=lambda d: d.get("time", ""), reverse=True)
+            exit_price = (pair_deals[0].get("price")
+                          or pair_deals[0].get("dealPrice"))
+    except Exception:
+        pass   # exit_price stays None — frontend handles gracefully
+
+    await manager.broadcast(json.dumps({
+        "position_closed": {
+            "pair":            pair,
+            "direction":       "long" if direction == "buy" else "short",
+            "reason":          reason,
+            "pnl":             round(profit, 2),
+            "signal_snapshot": signal_snapshot,
+            "close_ts":        now.isoformat(),
+            "exit_price":      exit_price,   # float | None
+        }
+    }))
+
+
 async def _position_monitor():
     """
     Every 30s — detect when MT5 positions close (SL/TP hit) and broadcast
-    a position_closed notification with P&L.
+    a position_closed notification with P&L and actual exit price.
     Only runs if METAAPI_TOKEN is configured.
     """
     if not os.getenv("METAAPI_TOKEN"):
@@ -206,10 +250,8 @@ async def _position_monitor():
             # Positions that were open last cycle but are gone now → closed
             for pid, pos in prev_positions.items():
                 if pid not in current_ids:
-                    profit     = pos.get("profit") or pos.get("unrealizedProfit") or 0
-                    pair       = pos.get("symbol", "")
-                    direction  = pos.get("type", "").lower()  # buy/sell
-                    reason     = "tp" if float(profit) > 0 else "sl"
+                    profit = float(pos.get("profit") or pos.get("unrealizedProfit") or 0)
+                    pair   = pos.get("symbol", "")
 
                     # Attach stored signal snapshot for replay generation
                     signal_snapshot = None
@@ -219,21 +261,13 @@ async def _position_monitor():
                     except Exception:
                         pass
 
-                    await manager.broadcast(json.dumps({
-                        "position_closed": {
-                            "pair":            pair,
-                            "direction":       "long" if direction == "buy" else "short",
-                            "reason":          reason,
-                            "pnl":             round(float(profit), 2),
-                            "signal_snapshot": signal_snapshot,
-                            "close_ts":        datetime.now(timezone.utc).isoformat(),
-                        }
-                    }))
+                    # Broadcast with exit price — runs as task to avoid blocking the loop
+                    asyncio.create_task(_close_and_broadcast(pos, signal_snapshot))
 
-                    # Consecutive-loss guard
+                    # Consecutive-loss guard (reads profit directly — no network needed)
                     try:
                         from scanner import record_trade_result
-                        pause_info = record_trade_result(float(profit) > 0)
+                        pause_info = record_trade_result(profit > 0)
                         if pause_info["should_pause"]:
                             await manager.broadcast(json.dumps({
                                 "auto_trade_paused": {
@@ -491,7 +525,7 @@ async def move_to_breakeven(req: BreakevenRequest):
 
 @app.get("/api/backtest")
 async def run_backtest(
-    pairs:     str = "XAUUSD,EURUSD,GBPUSD,NZDJPY",
+    pairs:     str = "XAUUSD,EURUSD,GBPUSD,GBPJPY",
     min_score: int = 60,
     days:      int = 30,
 ):

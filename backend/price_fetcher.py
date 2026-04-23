@@ -5,10 +5,10 @@ Fetches the last 200 H1 + 200 M15 candles for all tracked pairs every 5 minutes
 and writes them directly into the shared _ohlcv_cache in main.py.
 
 Yahoo Finance symbol mapping:
-  XAUUSD → XAUUSD=X
+  XAUUSD → GC=F   (COMEX Gold Futures front month — more reliable than XAUUSD=X)
   EURUSD → EURUSD=X
   GBPUSD → GBPUSD=X
-  NZDJPY → NZDJPY=X
+  GBPJPY → GBPJPY=X
 """
 import asyncio
 import logging
@@ -18,10 +18,10 @@ logger = logging.getLogger(__name__)
 
 # Pair → Yahoo Finance ticker
 YF_SYMBOLS: dict[str, str] = {
-    "XAUUSD": "XAUUSD=X",
+    "XAUUSD": "GC=F",       # COMEX Gold Futures (more reliable than XAUUSD=X)
     "EURUSD": "EURUSD=X",
     "GBPUSD": "GBPUSD=X",
-    "NZDJPY": "NZDJPY=X",
+    "GBPJPY": "GBPJPY=X",
 }
 
 # Timeframe code → yfinance interval string + period for ~200 bars
