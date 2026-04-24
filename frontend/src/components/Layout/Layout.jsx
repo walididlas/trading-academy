@@ -4,6 +4,7 @@ import Sidebar from './Sidebar'
 import MobileHeader from './MobileHeader'
 import BottomNav from './BottomNav'
 import AlertToast from '../AlertToast'
+import PushBanner from '../PushBanner'
 import { AlertProvider } from '../../contexts/AlertContext'
 
 export default function Layout({ children }) {
@@ -54,6 +55,9 @@ export default function Layout({ children }) {
         <div className="app-main">
           {/* Mobile-only top header */}
           <MobileHeader onMenuOpen={openSidebar} />
+
+          {/* Push notification opt-in banner — shown until subscribed */}
+          <PushBanner />
 
           {/* In-app alert toasts (appear below mobile header) */}
           <AlertToast />

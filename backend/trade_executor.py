@@ -254,6 +254,32 @@ async def set_sl_to_breakeven(position_id: str, entry_price: float) -> dict:
     }
     return await _post("/trade", body)
 
+
+async def modify_position(position_id: str, sl: float | None = None, tp: float | None = None) -> dict:
+    """
+    Modify SL and/or TP on an open position.
+    Pass sl= to update stop loss, tp= to update take profit, or both.
+    """
+    body: dict = {"actionType": "POSITION_MODIFY", "positionId": position_id}
+    if sl is not None:
+        body["stopLoss"] = sl
+    if tp is not None:
+        body["takeProfit"] = tp
+    return await _post("/trade", body)
+
+
+async def partial_close_position(position_id: str, volume: float) -> dict:
+    """
+    Partially close a position by reducing its volume.
+    volume = lots to close (e.g. 0.01 to close half of a 0.02 lot trade).
+    """
+    body = {
+        "actionType": "POSITION_CLOSE_PARTIAL",
+        "positionId": position_id,
+        "volume":     round(volume, 2),
+    }
+    return await _post("/trade", body)
+
 # ── Lot size calculator ───────────────────────────────────────────────────────
 
 def calc_lots(balance: float, risk_pct: float, entry: float, sl: float, pair: str) -> float:

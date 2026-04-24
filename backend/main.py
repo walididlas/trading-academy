@@ -344,6 +344,8 @@ async def lifespan(app: FastAPI):
     from news_fetcher import run_news_fetcher
     from calendar_fetcher import run_calendar_fetcher
 
+    from trade_manager import run_trade_manager
+
     # Start price fetcher first so cache is warm before scanner's first run
     price_task        = asyncio.create_task(run_price_fetcher(_ohlcv_cache))
     scanner_task      = asyncio.create_task(run_scanner(manager.broadcast, _get_ohlcv))
@@ -353,11 +355,12 @@ async def lifespan(app: FastAPI):
     news_warn_task    = asyncio.create_task(_news_warning_scheduler())
     position_task     = asyncio.create_task(_position_monitor())
     weekly_task       = asyncio.create_task(_weekly_report_scheduler())
+    mgmt_task         = asyncio.create_task(run_trade_manager(manager.broadcast))
 
     yield
 
     for task in (price_task, scanner_task, kz_task, news_task, calendar_task,
-                 news_warn_task, position_task, weekly_task):
+                 news_warn_task, position_task, weekly_task, mgmt_task):
         task.cancel()
         try:
             await task

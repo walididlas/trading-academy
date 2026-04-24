@@ -2,6 +2,8 @@ import React, { createContext, useContext, useState, useEffect, useRef, useCallb
 import { API_BASE, WS_BASE } from '../config'
 
 // ── Web Push helpers ─────────────────────────────────────────────────────────
+const PUSH_VAPID_KEY_STORE = 'push_vapid_key'   // localStorage key tracking which VAPID was used
+
 function _urlBase64ToUint8Array(base64String) {
   const padding = '='.repeat((4 - (base64String.length % 4)) % 4)
   const base64  = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/')
@@ -21,25 +23,43 @@ async function _postSubscription(sub) {
   } catch (_) {}
 }
 
+/**
+ * Subscribe (or force re-subscribe) to Web Push using the current VAPID key.
+ * If a subscription with an OLD VAPID key exists it is unsubscribed first so
+ * the new key takes effect immediately.
+ * Returns true when a valid subscription with the current VAPID key is active.
+ */
 async function _subscribeToPush(registration) {
   try {
     const vapidKey = import.meta.env.VITE_VAPID_PUBLIC_KEY
-    if (!vapidKey || !registration.pushManager) return
+    if (!vapidKey || !registration.pushManager) return false
 
-    // Reuse existing subscription if present — just re-register with backend
-    const existing = await registration.pushManager.getSubscription()
-    if (existing) {
-      await _postSubscription(existing)
-      return
+    const storedKey = localStorage.getItem(PUSH_VAPID_KEY_STORE)
+    const existing  = await registration.pushManager.getSubscription()
+
+    // Key rotation: old subscription uses a different VAPID key → nuke it
+    if (existing && storedKey !== vapidKey) {
+      try { await existing.unsubscribe() } catch (_) {}
     }
 
-    const sub = await registration.pushManager.subscribe({
-      userVisibleOnly:      true,
-      applicationServerKey: _urlBase64ToUint8Array(vapidKey),
-    })
-    await _postSubscription(sub)
+    // Fresh subscription needed (rotation or no prior sub)
+    if (!existing || storedKey !== vapidKey) {
+      const sub = await registration.pushManager.subscribe({
+        userVisibleOnly:      true,
+        applicationServerKey: _urlBase64ToUint8Array(vapidKey),
+      })
+      await _postSubscription(sub)
+      localStorage.setItem(PUSH_VAPID_KEY_STORE, vapidKey)
+      return true
+    }
+
+    // Existing subscription is current — just re-register with backend (in case it restarted)
+    await _postSubscription(existing)
+    localStorage.setItem(PUSH_VAPID_KEY_STORE, vapidKey)
+    return true
   } catch (_) {
     // PushManager not supported, or permission denied — silent fallback
+    return false
   }
 }
 
@@ -150,20 +170,25 @@ export function AlertProvider({ children }) {
   const [permission, setPermission] = useState(
     typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
   )
+  const [pushSubscribed, setPushSubscribed] = useState(false)
   const [wsStatus, setWsStatus] = useState('connecting')
   const [autoTradingPaused, setAutoTradingPaused] = useState(false)
   const idRef = useRef(0)
   const timersRef = useRef({})
   const signalsRef = useRef([])  // always-current ref for WS callback
 
-  // Register service worker and subscribe to Web Push once
+  // Register service worker; force re-subscription if VAPID key has rotated
   useEffect(() => {
     if (!('serviceWorker' in navigator)) return
     navigator.serviceWorker.register('/sw.js')
-      .then(reg => {
-        // If notification permission already granted, subscribe to push immediately
-        if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
-          _subscribeToPush(reg)
+      .then(async reg => {
+        if (typeof Notification === 'undefined') return
+        const perm = Notification.permission
+        setPermission(perm)
+        if (perm === 'granted') {
+          // Always attempt subscription on load — _subscribeToPush handles rotation
+          const ok = await _subscribeToPush(reg)
+          setPushSubscribed(ok)
         }
       })
       .catch(() => {})
@@ -195,9 +220,11 @@ export function AlertProvider({ children }) {
     if (typeof Notification === 'undefined') return 'unsupported'
     const result = await Notification.requestPermission()
     setPermission(result)
-    // If granted, also subscribe to Web Push for background notifications
+    // If granted, subscribe to Web Push (handles VAPID key rotation internally)
     if (result === 'granted' && 'serviceWorker' in navigator) {
-      navigator.serviceWorker.ready.then(reg => _subscribeToPush(reg)).catch(() => {})
+      navigator.serviceWorker.ready
+        .then(reg => _subscribeToPush(reg).then(ok => setPushSubscribed(ok)))
+        .catch(() => {})
     }
     return result
   }, [])
@@ -467,6 +494,21 @@ export function AlertProvider({ children }) {
               } catch (_) {}
             }
 
+            // ── Auto trade management (BE, partial close, trailing SL, stagnant) ──
+            if (data.trade_management) {
+              const m = data.trade_management
+              const typeMap = {
+                breakeven:    { icon: '✅', label: 'Breakeven Activated', toast: 'signal'  },
+                partial_close:{ icon: '💰', label: 'Partial Close — TP1 Hit', toast: 'signal'  },
+                trailing_sl:  { icon: '📌', label: 'Trailing SL Updated',  toast: 'killzone' },
+                stagnant_close:{ icon: '⏱️', label: 'Stagnant Trade Closed', toast: 'warning' },
+              }
+              const meta  = typeMap[m.type] || { icon: '⚙️', label: 'Trade Update', toast: 'killzone' }
+              const title = `${meta.icon} ${m.pair} — ${meta.label}`
+              addToast({ type: meta.toast, title, body: m.message })
+              showNativeNotif(title, m.message, `mgmt-${m.type}-${m.pair}`)
+            }
+
             // ── Watch alert (score 70+) ──────────────────────────────────────
             if (data.watch_alert) {
               const w   = data.watch_alert
@@ -544,7 +586,7 @@ export function AlertProvider({ children }) {
   }, [])
 
   return (
-    <AlertContext.Provider value={{ signals, news, toasts, dismiss, permission, requestPermission, wsStatus, alertHistory, unreadCount, markRead, autoTradingPaused, setAutoTradingPaused }}>
+    <AlertContext.Provider value={{ signals, news, toasts, dismiss, permission, requestPermission, pushSubscribed, wsStatus, alertHistory, unreadCount, markRead, autoTradingPaused, setAutoTradingPaused }}>
       {children}
     </AlertContext.Provider>
   )
