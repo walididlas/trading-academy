@@ -135,32 +135,6 @@ function getOpenTrades() {
   }
 }
 
-// ── Helpers for auto-journal entries ────────────────────────────────────────
-function inferSession(isoTs) {
-  try {
-    const d = new Date(isoTs)
-    const t = d.getUTCHours() * 60 + d.getUTCMinutes()
-    if (t >= 9 * 60 && t < 12 * 60)           return 'London'
-    if (t >= 14 * 60 + 30 && t < 17 * 60 + 30) return 'NY'
-    return 'Other'
-  } catch { return 'Other' }
-}
-
-function gradeFromScore(score) {
-  if (score == null) return 'F'
-  if (score >= 80)   return 'A'
-  if (score >= 70)   return 'B'
-  if (score >= 60)   return 'C'
-  return 'F'
-}
-
-function getPipSize(pair) {
-  if (!pair)             return 0.0001
-  if (pair === 'XAUUSD') return 0.1
-  if (pair.includes('JPY')) return 0.01
-  return 0.0001
-}
-
 export function AlertProvider({ children }) {
   const [signals, setSignals] = useState([])
   const [news, setNews] = useState([])
@@ -172,7 +146,6 @@ export function AlertProvider({ children }) {
   )
   const [pushSubscribed, setPushSubscribed] = useState(false)
   const [wsStatus, setWsStatus] = useState('connecting')
-  const [autoTradingPaused, setAutoTradingPaused] = useState(false)
   const idRef = useRef(0)
   const timersRef = useRef({})
   const signalsRef = useRef([])  // always-current ref for WS callback
@@ -351,164 +324,6 @@ export function AlertProvider({ children }) {
               showNativeNotif(title, body, 'kz-warning')
             }
 
-            // ── Auto-execution confirmation ──────────────────────────────────
-            if (data.auto_executed) {
-              const x = data.auto_executed
-              const dir = x.direction === 'long' ? '▲ BUY' : '▼ SELL'
-              const title = `✅ Trade Placed — ${x.pair} ${dir}`
-              const body  = `${x.lots} lots @ ${x.entry} · SL ${x.sl} · TP1 ${x.tp1}${x.order_id ? ` · ID ${x.order_id}` : ''}`
-              addToast({ type: 'signal', title, body })
-              showNativeNotif(title, body, `exec-${x.pair}`)
-            }
-
-            // ── Auto-execution failed ────────────────────────────────────────
-            if (data.auto_execute_failed) {
-              const f = data.auto_execute_failed
-              addToast({ type: 'warning', title: `⚠ MT5 Error — ${f.pair}`, body: f.error })
-            }
-
-            // ── Daily loss limit or consecutive losses paused ────────────────
-            if (data.auto_trade_paused) {
-              setAutoTradingPaused(true)
-              const title = '🛑 Auto-Trading Paused'
-              const body  = data.auto_trade_paused.reason || '5% daily loss limit reached'
-              addToast({ type: 'warning', title, body })
-              showNativeNotif(title, body, 'auto-paused')
-            }
-
-            // ── Spread / news block ──────────────────────────────────────────
-            if (data.spread_blocked) {
-              const b = data.spread_blocked
-              const title = b.type === 'news'
-                ? `⚡ Trade blocked — HIGH news on ${b.pair}`
-                : `⚠️ Trade blocked — spread too wide on ${b.pair}`
-              const body = b.type === 'news'
-                ? b.reason
-                : `Current: ${b.spread_pips} pips · Max: ${b.max_pips} pips`
-              addToast({ type: 'warning', title, body })
-              showNativeNotif(title, body, `spread-${b.pair}`)
-            }
-
-            // ── Auto-trading manually resumed ────────────────────────────────
-            if (data.auto_trade_resumed) {
-              setAutoTradingPaused(false)
-              addToast({ type: 'killzone', title: '✅ Auto-Trading Resumed', body: 'Bot is active again — monitoring for STRONG signals' })
-            }
-
-            // ── Position closed (SL or TP hit) ──────────────────────────────
-            if (data.position_closed) {
-              const c    = data.position_closed
-              const won  = c.pnl >= 0
-              const icon = won ? '🎯' : '🛑'
-              const why  = c.reason === 'tp' ? 'TP Hit' : 'SL Hit'
-              const title = `${icon} ${c.pair} — ${why}`
-              const body  = `${c.direction === 'long' ? '▲ LONG' : '▼ SHORT'} · P&L ${won ? '+' : ''}$${c.pnl}`
-              addToast({ type: won ? 'signal' : 'warning', title, body })
-              showNativeNotif(title, body, `closed-${c.pair}`)
-
-              // ── Generate and persist session replay entry ──────────────────
-              try {
-                const snap = c.signal_snapshot
-                const criteria = snap?.criteria ?? {}
-                const CRITERIA_KEYS = ['kill_zone','order_block','fvg','market_structure','ema50','premium_discount','news_clear']
-                const metCriteria  = CRITERIA_KEYS.filter(k => criteria[k]?.triggered)
-                const missCriteria = CRITERIA_KEYS.filter(k => !criteria[k]?.triggered)
-                const score        = snap?.score ?? null
-                const allMet       = missCriteria.length === 0 || (score != null && score >= 80)
-
-                let verdict
-                if (c.reason === 'tp') {
-                  verdict = 'target_hit'
-                } else if (allMet) {
-                  verdict = 'good_trade_bad_outcome'  // full setup, SL hit
-                } else {
-                  verdict = 'criteria_missing'        // incomplete setup, SL hit
-                }
-
-                const replay = {
-                  id:          `replay_${Date.now()}`,
-                  ts:          c.close_ts ?? new Date().toISOString(),
-                  pair:        c.pair,
-                  direction:   c.direction,
-                  reason:      c.reason,
-                  pnl:         c.pnl,
-                  score,
-                  entry:       snap?.entry ?? null,
-                  sl:          snap?.sl    ?? null,
-                  tp1:         snap?.tp1   ?? null,
-                  criteria,
-                  met_criteria:  metCriteria,
-                  miss_criteria: missCriteria,
-                  verdict,
-                  snapshot_ts: snap?.snapshot_ts ?? null,
-                }
-
-                const existing = JSON.parse(localStorage.getItem('session_replays') || '[]')
-                localStorage.setItem('session_replays', JSON.stringify([replay, ...existing].slice(0, 200)))
-              } catch (_) {}
-
-              // ── Auto-journal entry ───────────────────────────────────────────
-              try {
-                const snap  = c.signal_snapshot
-                const score = snap?.score ?? null
-                let pips = ''
-                if (snap?.entry != null && c.exit_price != null) {
-                  const raw = (c.exit_price - snap.entry) / getPipSize(c.pair)
-                  pips = (c.direction === 'long' ? raw : -raw).toFixed(1)
-                }
-                const journalEntry = {
-                  id:           `auto_${Date.now()}`,
-                  date:         (c.close_ts ?? new Date().toISOString()).slice(0, 10),
-                  pair:         c.pair,
-                  direction:    c.direction,
-                  session:      inferSession(c.close_ts),
-                  entry:        snap?.entry?.toString() ?? '',
-                  sl:           snap?.sl?.toString() ?? '',
-                  tp:           snap?.tp1?.toString() ?? '',
-                  exitPrice:    c.exit_price?.toString() ?? '',
-                  lotSize:      '',
-                  result:       c.reason === 'tp' ? 'win' : 'loss',
-                  pips,
-                  pnl:          c.pnl?.toString() ?? '',
-                  rr:           '',
-                  kz:           snap?.criteria?.kill_zone?.triggered ?? false,
-                  trendAligned: snap?.criteria?.ema50?.triggered ?? false,
-                  iccValid:     (score ?? 0) >= 60,
-                  grade:        gradeFromScore(score),
-                  reasoning:    `Auto-logged: ${c.reason === 'tp' ? 'Target hit' : 'Stop loss hit'}. Score: ${score ?? 'N/A'}`,
-                  signalScore:  score,
-                  signalGrade:  snap?.grade ?? null,
-                  auto:         true,
-                }
-                const existingJ = JSON.parse(localStorage.getItem('trading_journal') || '[]')
-                const cutoff    = Date.now() - 5 * 60 * 1000
-                const isDup     = existingJ.some(t =>
-                  t.auto && t.pair === journalEntry.pair &&
-                  t.date === journalEntry.date &&
-                  t.direction === journalEntry.direction &&
-                  parseInt(t.id?.replace('auto_', '') ?? '0', 10) > cutoff
-                )
-                if (!isDup) {
-                  localStorage.setItem('trading_journal', JSON.stringify([journalEntry, ...existingJ]))
-                }
-              } catch (_) {}
-            }
-
-            // ── Auto trade management (BE, partial close, trailing SL, stagnant) ──
-            if (data.trade_management) {
-              const m = data.trade_management
-              const typeMap = {
-                breakeven:    { icon: '✅', label: 'Breakeven Activated', toast: 'signal'  },
-                partial_close:{ icon: '💰', label: 'Partial Close — TP1 Hit', toast: 'signal'  },
-                trailing_sl:  { icon: '📌', label: 'Trailing SL Updated',  toast: 'killzone' },
-                stagnant_close:{ icon: '⏱️', label: 'Stagnant Trade Closed', toast: 'warning' },
-              }
-              const meta  = typeMap[m.type] || { icon: '⚙️', label: 'Trade Update', toast: 'killzone' }
-              const title = `${meta.icon} ${m.pair} — ${meta.label}`
-              addToast({ type: meta.toast, title, body: m.message })
-              showNativeNotif(title, m.message, `mgmt-${m.type}-${m.pair}`)
-            }
-
             // ── Watch alert (score 70+) ──────────────────────────────────────
             if (data.watch_alert) {
               const w   = data.watch_alert
@@ -586,7 +401,7 @@ export function AlertProvider({ children }) {
   }, [])
 
   return (
-    <AlertContext.Provider value={{ signals, news, toasts, dismiss, permission, requestPermission, pushSubscribed, wsStatus, alertHistory, unreadCount, markRead, autoTradingPaused, setAutoTradingPaused }}>
+    <AlertContext.Provider value={{ signals, news, toasts, dismiss, permission, requestPermission, pushSubscribed, wsStatus, alertHistory, unreadCount, markRead }}>
       {children}
     </AlertContext.Provider>
   )

@@ -38,85 +38,8 @@ SIGNAL_EXPIRY = 4 * 60 * 60
 
 _last_signals: list[dict] = []
 
-# ── Auto-execution state ───────────────────────────────────────────────────────
-_auto_state: dict = {
-    "enabled":             True,
-    "daily_start_equity":  None,
-    "last_date":           None,
-    "executed":            set(),   # f"{pair}_{YYYY-MM-DD_HH}" — one per pair per hour
-    "consecutive_losses":  0,
-    "paused_reason":       None,    # None = active, str = paused with this reason
-}
-
-
-def record_trade_result(won: bool) -> dict:
-    """
-    Call after a position closes. Returns {"should_pause": bool, "reason": str}.
-    If 2 consecutive losses → pause auto-trading.
-    """
-    state = _auto_state
-    if won:
-        state["consecutive_losses"] = 0
-        return {"should_pause": False, "reason": ""}
-    else:
-        state["consecutive_losses"] += 1
-        if state["consecutive_losses"] >= 2 and state["paused_reason"] is None:
-            reason = (
-                f"2 consecutive losses this session. "
-                "Review setups before resuming."
-            )
-            state["paused_reason"] = reason
-            state["enabled"] = False
-            return {"should_pause": True, "reason": reason}
-        return {"should_pause": False, "reason": ""}
-
-
-def reset_session_losses() -> None:
-    """Call at each KZ open. Resets consecutive loss counter (new session = fresh start)."""
-    state = _auto_state
-    state["consecutive_losses"] = 0
-    if state["paused_reason"] and "consecutive" in state["paused_reason"]:
-        state["paused_reason"] = None
-        state["enabled"] = True
-
-
-def resume_auto_trading() -> None:
-    """Manual resume — clears paused_reason, resets counter, re-enables."""
-    state = _auto_state
-    state["paused_reason"] = None
-    state["consecutive_losses"] = 0
-    state["enabled"] = True
-
-
-def get_auto_state() -> dict:
-    """Return serialisable snapshot of auto-trade state."""
-    state = _auto_state
-    return {
-        "enabled":            state["enabled"],
-        "paused_reason":      state["paused_reason"],
-        "consecutive_losses": state["consecutive_losses"],
-        "daily_start_equity": state["daily_start_equity"],
-    }
-
 # ── Previous criteria state — for smart transition alerts ─────────────────────
 _last_criteria: dict[str, dict] = {}   # pair → criteria dict from last scan
-
-# ── Signal snapshots at time of execution (for post-trade replay) ──────────────
-_signal_snapshots: dict[str, dict] = {}  # pair → full signal dict at time of execution
-
-
-def store_signal_snapshot(pair: str, signal: dict) -> None:
-    """Store signal details at time of trade execution for replay generation."""
-    import copy
-    _signal_snapshots[pair] = {
-        **copy.deepcopy(signal),
-        "snapshot_ts": _utc_now().isoformat(),
-    }
-
-
-def get_signal_snapshot(pair: str) -> dict | None:
-    """Return the stored signal snapshot for a pair, or None."""
-    return _signal_snapshots.get(pair.upper())
 
 
 # ─────────────────────────────── Helpers ──────────────────────────────────────
@@ -700,157 +623,6 @@ def _score_pair(
     }
 
 
-# ─────────────────── Auto-execution ──────────────────────────────────────────
-
-async def _auto_execute(sig: dict, broadcast: Callable) -> None:
-    """
-    Auto-execute a STRONG signal on MT5 via MetaApi.
-    Guards: METAAPI_TOKEN must be set, weekends, 5% daily loss limit, one trade per pair per hour.
-    """
-    if not os.getenv("METAAPI_TOKEN"):
-        return                          # silently skip in dev / if not configured
-    if _is_weekend():
-        return                          # markets closed Sat/Sun
-
-    pair = sig.get("pair", "")
-    entry = sig.get("entry")
-    sl    = sig.get("sl")
-    tp1   = sig.get("tp1")
-
-    if not (entry and sl and tp1):
-        return                          # incomplete signal — no levels yet
-
-    state = _auto_state
-    now   = _utc_now()
-    today = now.date().isoformat()
-    exec_key = f"{pair}_{today}_{now.hour}"
-
-    if state["paused_reason"] is not None:
-        return                          # paused (daily loss or consecutive losses)
-
-    if exec_key in state["executed"]:
-        return                          # already executed this pair this hour
-
-    try:
-        from trade_executor import get_account_info, place_order, calc_lots as _calc_lots
-
-        # ── Fetch live equity ──────────────────────────────────────────────────
-        info   = await get_account_info()
-        equity = float(info.get("equity") or info.get("balance") or 0)
-        if equity <= 0:
-            return
-
-        # ── Reset daily state on new day ───────────────────────────────────────
-        if state["last_date"] != today:
-            state["last_date"]          = today
-            state["daily_start_equity"] = equity
-            state["enabled"]            = True
-            state["executed"]           = set()
-
-        if state["daily_start_equity"] is None:
-            state["daily_start_equity"] = equity
-
-        # ── Daily 5% loss limit ────────────────────────────────────────────────
-        start_eq    = state["daily_start_equity"]
-        loss_pct    = (start_eq - equity) / start_eq * 100 if start_eq > 0 else 0
-        if loss_pct >= 5.0:
-            if state["enabled"]:
-                state["enabled"] = False
-                await broadcast(json.dumps({
-                    "auto_trade_paused": {
-                        "reason": (
-                            f"Daily 5% loss limit hit — equity ${equity:,.2f} "
-                            f"(started ${start_eq:,.2f}, down {loss_pct:.1f}%). "
-                            "Auto-trading paused until tomorrow."
-                        )
-                    }
-                }))
-            return
-
-        # ── News window block (±30 min around HIGH-impact event) ──────────────
-        try:
-            from calendar_fetcher import get_news_risk_for_pair
-            news_risk = get_news_risk_for_pair(pair, window_minutes=30)
-            if news_risk.get("level") == "HIGH":
-                evt = news_risk.get("next_event") or (news_risk.get("events") or [None])[0]
-                evt_title = evt.get("title", "HIGH news") if evt else "HIGH news"
-                await broadcast(json.dumps({
-                    "spread_blocked": {
-                        "pair":   pair,
-                        "reason": f"HIGH-impact news within 30 min — {evt_title}",
-                        "type":   "news",
-                    }
-                }))
-                return
-        except Exception:
-            pass
-
-        # ── Spread check ───────────────────────────────────────────────────────
-        try:
-            from trade_executor import check_spread
-            sp = await check_spread(pair)
-            if not sp["ok"]:
-                await broadcast(json.dumps({
-                    "spread_blocked": {
-                        "pair":         pair,
-                        "spread_pips":  sp["spread_pips"],
-                        "max_pips":     sp["max_pips"],
-                        "reason":       f"Spread {sp['spread_pips']} pips > max {sp['max_pips']} pips",
-                        "type":         "spread",
-                    }
-                }))
-                return
-        except Exception:
-            pass          # if spread check fails, proceed cautiously
-
-        # ── Lot size — 1% risk of current equity ──────────────────────────────
-        lots = _calc_lots(equity, 1.0, entry, sl, pair)
-        if not lots:
-            lots = 0.01
-
-        # ── Place order ────────────────────────────────────────────────────────
-        result = await place_order(
-            symbol=pair, direction=sig["direction"],
-            lots=lots, entry=entry, sl=sl, tp=tp1,
-        )
-
-        state["executed"].add(exec_key)
-        store_signal_snapshot(pair, sig)   # save for post-trade replay
-
-        order_id = str(result.get("orderId") or result.get("positionId") or "")
-
-        await broadcast(json.dumps({
-            "auto_executed": {
-                "pair":      pair,
-                "direction": sig["direction"],
-                "lots":      lots,
-                "entry":     entry,
-                "sl":        sl,
-                "tp1":       tp1,
-                "score":     sig.get("score"),
-                "order_id":  order_id,
-            }
-        }))
-        try:
-            from push_notifier import send_push
-            _arrow = "▲ BUY" if sig["direction"] == "long" else "▼ SELL"
-            asyncio.create_task(send_push(
-                title=f"✅ Trade Placed — {pair} {_arrow}",
-                body=f"{lots} lots @ {entry} · SL {sl} · TP1 {tp1}",
-                tag=f"exec-{pair}", type_="signal", url="/signals",
-            ))
-        except Exception:
-            pass
-
-    except Exception as exc:
-        await broadcast(json.dumps({
-            "auto_execute_failed": {
-                "pair":  pair,
-                "error": str(exc),
-            }
-        }))
-
-
 # ─────────────────── Scanner Loop ─────────────────────────────────────────────
 
 async def run_scanner(broadcast: Callable, get_ohlcv_fn: Callable) -> None:
@@ -907,17 +679,25 @@ async def run_scanner(broadcast: Callable, get_ohlcv_fn: Callable) -> None:
                 prev_score = prev.get("score", 0) if prev else 0
                 curr_score = sig.get("score", 0)
 
-                # ── STRONG transition → auto-execute + push signal alert ───────
+                # ── STRONG transition → push alert (manual execution on MT5) ────
                 if sig.get("grade") == "STRONG" and prev_grade != "STRONG":
                     strong_alerts.append(sig)
-                    asyncio.create_task(_auto_execute(sig, broadcast))
                     try:
                         from push_notifier import send_push
-                        _dir = sig.get("direction", "long")
-                        _arrow = "▲" if _dir == "long" else "▼"
+                        _dir   = sig.get("direction", "long")
+                        _arrow = "▲ BUY" if _dir == "long" else "▼ SELL"
+                        _entry = sig.get("entry", "—")
+                        _sl    = sig.get("sl",    "—")
+                        _tp1   = sig.get("tp1",   "—")
+                        _tp2   = sig.get("tp2",   "—")
+                        _psl   = sig.get("pip_sl")
+                        _lots_hint = f" · ~{sig.get('pip_sl')}p SL" if _psl else ""
                         asyncio.create_task(send_push(
-                            title=f"🔥 {pair} {_arrow} STRONG Signal ({curr_score}pts)",
-                            body=f"Entry {sig.get('entry')} · SL {sig.get('sl')} · TP1 {sig.get('tp1')}",
+                            title=f"🔥 {pair} {_arrow} — {curr_score}pts STRONG",
+                            body=(
+                                f"Entry {_entry} · SL {_sl} · TP1 {_tp1} · TP2 {_tp2}"
+                                f"{_lots_hint} · Execute manually on MT5"
+                            ),
                             tag=f"signal-{pair}", type_="signal", url="/signals",
                         ))
                     except Exception:

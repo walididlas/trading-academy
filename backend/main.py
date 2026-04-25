@@ -104,12 +104,6 @@ async def _kz_open_scheduler():
 
         if open_name and open_name != last_open:
             last_open = open_name
-            # Reset consecutive-loss counter at each new session
-            try:
-                from scanner import reset_session_losses
-                reset_session_losses()
-            except Exception:
-                pass
             await manager.broadcast(json.dumps({
                 "killzone_open": open_name,
                 "morocco_time":  open_mor,
@@ -165,164 +159,6 @@ async def _news_warning_scheduler():
             pass
 
 
-# ── Weekly report storage (max 8 reports) ────────────────────────────────────
-_weekly_reports: list[dict] = []
-
-
-async def _weekly_report_scheduler():
-    """
-    Fires every 60s.
-    On Sunday between 19:00 and 19:02 UTC (= 20:00–20:02 Morocco UTC+1),
-    generate and broadcast the weekly performance report.
-    Fires once per Sunday (keyed by ISO week number).
-    """
-    last_week_fired: int | None = None
-
-    while True:
-        await asyncio.sleep(60)
-        try:
-            now = datetime.now(timezone.utc)
-            # Sunday = weekday 6, 19:00–19:02 UTC
-            if now.weekday() != 6:
-                continue
-            if not (19 * 60 <= now.hour * 60 + now.minute < 19 * 60 + 2):
-                continue
-            week_num = now.isocalendar()[1]
-            if week_num == last_week_fired:
-                continue
-            last_week_fired = week_num
-
-            from trade_executor import get_weekly_stats
-            stats = await get_weekly_stats()
-            stats["generated_at"] = now.isoformat()
-            stats["week_num"]     = week_num
-
-            # Store — keep last 8
-            _weekly_reports.append(stats)
-            if len(_weekly_reports) > 8:
-                _weekly_reports.pop(0)
-
-            await manager.broadcast(json.dumps({"weekly_report": stats}))
-            icon = "🏆" if stats["verdict"] == "Strong week" else "📉" if stats["verdict"] == "Rough week" else "➖"
-            from push_notifier import send_push
-            asyncio.create_task(send_push(
-                title=f"{icon} Weekly Report — {stats['verdict']}",
-                body=f"{stats['total_trades']} trades · {stats['win_rate']}% WR · {'+'if stats['total_pnl']>=0 else ''}${stats['total_pnl']}",
-                tag="weekly-report", type_="signal" if stats["total_pnl"] >= 0 else "warning", url="/",
-            ))
-        except Exception:
-            pass
-
-
-async def _close_and_broadcast(pos: dict, signal_snapshot) -> None:
-    """
-    Fetch actual exit price from MetaApi deal history, then broadcast
-    position_closed with full detail. Runs as a fire-and-forget task so
-    the position monitor loop is never blocked by the network call.
-    """
-    from datetime import timedelta
-    from trade_executor import get_deals_for_range
-
-    pair      = pos.get("symbol", "")
-    profit    = float(pos.get("profit") or pos.get("unrealizedProfit") or 0)
-    direction = pos.get("type", "").lower()
-    reason    = "tp" if profit > 0 else "sl"
-    now       = datetime.now(timezone.utc)
-
-    # ── Look up actual exit price from deal history (last 5 min) ─────────────
-    exit_price = None
-    try:
-        deals = await get_deals_for_range(now - timedelta(minutes=5), now)
-        pair_deals = [
-            d for d in deals
-            if d.get("symbol", "").upper() == pair.upper()
-            and float(d.get("profit", 0)) != 0   # skip commission entries
-        ]
-        if pair_deals:
-            pair_deals.sort(key=lambda d: d.get("time", ""), reverse=True)
-            exit_price = (pair_deals[0].get("price")
-                          or pair_deals[0].get("dealPrice"))
-    except Exception:
-        pass   # exit_price stays None — frontend handles gracefully
-
-    dir_str = "long" if direction == "buy" else "short"
-    pnl_r   = round(profit, 2)
-    await manager.broadcast(json.dumps({
-        "position_closed": {
-            "pair":            pair,
-            "direction":       dir_str,
-            "reason":          reason,
-            "pnl":             pnl_r,
-            "signal_snapshot": signal_snapshot,
-            "close_ts":        now.isoformat(),
-            "exit_price":      exit_price,   # float | None
-        }
-    }))
-    # Push notification — fires even when browser is closed
-    icon   = "🎯" if reason == "tp" else "🛑"
-    why    = "Target hit" if reason == "tp" else "Stop loss hit"
-    arrow  = "▲" if dir_str == "long" else "▼"
-    pnl_s  = f"+${pnl_r}" if pnl_r >= 0 else f"-${abs(pnl_r)}"
-    from push_notifier import send_push
-    asyncio.create_task(send_push(
-        title=f"{icon} {pair} — {why}",
-        body=f"{arrow} {dir_str.upper()} · P&L {pnl_s}",
-        tag=f"closed-{pair}", type_="signal" if reason == "tp" else "warning", url="/signals",
-    ))
-
-
-async def _position_monitor():
-    """
-    Every 30s — detect when MT5 positions close (SL/TP hit) and broadcast
-    a position_closed notification with P&L and actual exit price.
-    Only runs if METAAPI_TOKEN is configured.
-    """
-    if not os.getenv("METAAPI_TOKEN"):
-        return
-
-    prev_positions: dict[str, dict] = {}   # position_id → position dict
-
-    while True:
-        await asyncio.sleep(30)
-        try:
-            from trade_executor import get_positions
-            positions = await get_positions()
-            current_ids = {p["id"]: p for p in positions if "id" in p}
-
-            # Positions that were open last cycle but are gone now → closed
-            for pid, pos in prev_positions.items():
-                if pid not in current_ids:
-                    profit = float(pos.get("profit") or pos.get("unrealizedProfit") or 0)
-                    pair   = pos.get("symbol", "")
-
-                    # Attach stored signal snapshot for replay generation
-                    signal_snapshot = None
-                    try:
-                        from scanner import get_signal_snapshot
-                        signal_snapshot = get_signal_snapshot(pair)
-                    except Exception:
-                        pass
-
-                    # Broadcast with exit price — runs as task to avoid blocking the loop
-                    asyncio.create_task(_close_and_broadcast(pos, signal_snapshot))
-
-                    # Consecutive-loss guard (reads profit directly — no network needed)
-                    try:
-                        from scanner import record_trade_result
-                        pause_info = record_trade_result(profit > 0)
-                        if pause_info["should_pause"]:
-                            await manager.broadcast(json.dumps({
-                                "auto_trade_paused": {
-                                    "reason": f"⚠️ Auto-trading paused — 2 consecutive losses. {pause_info['reason']} Review before resuming."
-                                }
-                            }))
-                    except Exception:
-                        pass
-
-            prev_positions = current_ids
-
-        except Exception:
-            pass
 
 
 @asynccontextmanager
@@ -347,23 +183,18 @@ async def lifespan(app: FastAPI):
     from news_fetcher import run_news_fetcher
     from calendar_fetcher import run_calendar_fetcher
 
-    from trade_manager import run_trade_manager
-
     # Start price fetcher first so cache is warm before scanner's first run
-    price_task        = asyncio.create_task(run_price_fetcher(_ohlcv_cache))
-    scanner_task      = asyncio.create_task(run_scanner(manager.broadcast, _get_ohlcv))
-    kz_task           = asyncio.create_task(_kz_open_scheduler())
-    news_task         = asyncio.create_task(run_news_fetcher(manager.broadcast))
-    calendar_task     = asyncio.create_task(run_calendar_fetcher())
-    news_warn_task    = asyncio.create_task(_news_warning_scheduler())
-    position_task     = asyncio.create_task(_position_monitor())
-    weekly_task       = asyncio.create_task(_weekly_report_scheduler())
-    mgmt_task         = asyncio.create_task(run_trade_manager(manager.broadcast))
+    price_task     = asyncio.create_task(run_price_fetcher(_ohlcv_cache))
+    scanner_task   = asyncio.create_task(run_scanner(manager.broadcast, _get_ohlcv))
+    kz_task        = asyncio.create_task(_kz_open_scheduler())
+    news_task      = asyncio.create_task(run_news_fetcher(manager.broadcast))
+    calendar_task  = asyncio.create_task(run_calendar_fetcher())
+    news_warn_task = asyncio.create_task(_news_warning_scheduler())
 
     yield
 
     for task in (price_task, scanner_task, kz_task, news_task, calendar_task,
-                 news_warn_task, position_task, weekly_task, mgmt_task):
+                 news_warn_task):
         task.cancel()
         try:
             await task
@@ -486,87 +317,6 @@ async def get_calendar():
     return get_cached_calendar()
 
 
-# ── Trade execution endpoints (MetaApi) ────────────────────────────────────────
-
-class TradeRequest(BaseModel):
-    pair:      str
-    direction: str          # 'long' | 'short'
-    lots:      float
-    entry:     float
-    sl:        float
-    tp:        float        # TP1 used for the live order
-
-
-class CloseRequest(BaseModel):
-    position_id: str
-
-
-class BreakevenRequest(BaseModel):
-    position_id: str
-    entry_price: float
-
-
-@app.post("/api/trade/execute")
-async def execute_trade(req: TradeRequest):
-    """Place a market order on MT5 via MetaApi, after spread and news checks."""
-    if not os.getenv("METAAPI_TOKEN"):
-        return {"ok": False, "error": "METAAPI_TOKEN not configured"}
-    try:
-        from trade_executor import place_order, check_spread
-        from calendar_fetcher import get_news_risk_for_pair
-
-        # ── News window block ──────────────────────────────────────────────────
-        news_risk = get_news_risk_for_pair(req.pair, window_minutes=30)
-        if news_risk.get("level") == "HIGH":
-            evt       = news_risk.get("next_event") or (news_risk.get("events") or [None])[0]
-            evt_title = evt.get("title", "HIGH news") if evt else "HIGH news"
-            return {
-                "ok":     False,
-                "error":  f"HIGH-impact news within 30 min — {evt_title}",
-                "type":   "news",
-            }
-
-        # ── Spread check ───────────────────────────────────────────────────────
-        sp = await check_spread(req.pair)
-        if not sp["ok"]:
-            return {
-                "ok":          False,
-                "error":       f"Spread too wide — {sp['spread_pips']} pips (max {sp['max_pips']})",
-                "spread_pips": sp["spread_pips"],
-                "max_pips":    sp["max_pips"],
-                "type":        "spread",
-            }
-
-        result = await place_order(
-            symbol=req.pair, direction=req.direction,
-            lots=req.lots, entry=req.entry, sl=req.sl, tp=req.tp,
-        )
-        return {"ok": True, "result": result}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-@app.post("/api/trade/close")
-async def close_trade(req: CloseRequest):
-    """Close an open MT5 position by id."""
-    try:
-        from trade_executor import close_position
-        result = await close_position(req.position_id)
-        return {"ok": True, "result": result}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-@app.post("/api/trade/breakeven")
-async def move_to_breakeven(req: BreakevenRequest):
-    """Move SL to entry price (breakeven) on an open position."""
-    try:
-        from trade_executor import set_sl_to_breakeven
-        result = await set_sl_to_breakeven(req.position_id, req.entry_price)
-        return {"ok": True, "result": result}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
 
 @app.get("/api/backtest")
 async def run_backtest(
@@ -586,160 +336,6 @@ async def run_backtest(
         None, _run_backtest, _ohlcv_cache, pair_list, min_score, days
     )
     return result
-
-
-@app.get("/api/trade/account")
-async def get_account_snapshot():
-    """
-    Returns live equity + today's closed-deal stats for the drawdown dashboard.
-    Falls back gracefully when METAAPI_TOKEN is not set.
-    """
-    if not os.getenv("METAAPI_TOKEN"):
-        return {"ok": False, "error": "METAAPI_TOKEN not configured"}
-    try:
-        from trade_executor import get_account_info, get_deals_today
-        from scanner import get_auto_state
-
-        info  = await get_account_info()
-        deals = await get_deals_today()
-
-        # ── Today's closed deals ───────────────────────────────────────────────
-        # Filter to actual trade closes (type IN_OUT, OUT, etc.) with non-zero profit
-        trade_deals = [
-            d for d in deals
-            if d.get("entryType") in ("DEAL_ENTRY_OUT", "OUT", "out")
-            or d.get("type") in ("DEAL_TYPE_SELL", "DEAL_TYPE_BUY")
-        ]
-
-        today_pnl    = sum(float(d.get("profit", 0)) for d in deals)
-        wins_today   = [d for d in deals if float(d.get("profit", 0)) > 0]
-        losses_today = [d for d in deals if float(d.get("profit", 0)) < 0]
-        total_closed = len(wins_today) + len(losses_today)
-        win_rate     = round(len(wins_today) / total_closed * 100) if total_closed else None
-
-        # Consecutive streak: walk backwards through deals sorted by time
-        sorted_deals = sorted(deals, key=lambda d: d.get("time", ""), reverse=True)
-        streak = 0
-        streak_type = None
-        for d in sorted_deals:
-            p = float(d.get("profit", 0))
-            if p == 0:
-                continue
-            kind = "win" if p > 0 else "loss"
-            if streak_type is None:
-                streak_type = kind
-            if kind == streak_type:
-                streak += 1
-            else:
-                break
-
-        # Max drawdown today: minimum cumulative P&L at any point
-        running = 0.0
-        peak    = 0.0
-        max_dd  = 0.0
-        for d in sorted(deals, key=lambda x: x.get("time", "")):
-            running += float(d.get("profit", 0))
-            peak     = max(peak, running)
-            dd       = peak - running
-            max_dd   = max(max_dd, dd)
-
-        # Daily loss % from scanner state
-        auto = get_auto_state()
-        start_eq = auto.get("daily_start_equity")
-        equity   = float(info.get("equity") or info.get("balance") or 0)
-        balance  = float(info.get("balance") or equity)
-
-        if start_eq and start_eq > 0:
-            loss_pct = (start_eq - equity) / start_eq * 100
-        else:
-            loss_pct = 0.0
-
-        return {
-            "ok":           True,
-            "equity":       round(equity, 2),
-            "balance":      round(balance, 2),
-            "start_equity": round(start_eq, 2) if start_eq else None,
-            "today_pnl":    round(today_pnl, 2),
-            "loss_pct":     round(loss_pct, 2),
-            "wins_today":   len(wins_today),
-            "losses_today": len(losses_today),
-            "total_closed": total_closed,
-            "win_rate":     win_rate,
-            "streak":       streak,
-            "streak_type":  streak_type,
-            "max_drawdown": round(max_dd, 2),
-            "paused":       auto.get("paused_reason") is not None,
-        }
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-@app.get("/api/spread/{pair}")
-async def get_spread(pair: str):
-    """Live spread for a pair in pips, compared against max allowed."""
-    if not os.getenv("METAAPI_TOKEN"):
-        return {"ok": False, "error": "METAAPI_TOKEN not configured"}
-    try:
-        from trade_executor import check_spread
-        result = await check_spread(pair.upper())
-        return {"ok": True, **result, "pair": pair.upper()}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-@app.post("/api/trade/resume")
-async def resume_auto_trading():
-    """Manually re-enable auto-trading after a consecutive-loss pause."""
-    from scanner import resume_auto_trading as _resume
-    _resume()
-    await manager.broadcast(json.dumps({"auto_trade_resumed": {"reason": "Manually resumed by user"}}))
-    return {"ok": True}
-
-
-@app.get("/api/trade/status")
-async def get_auto_trade_status():
-    """Return current auto-trade state (enabled, paused_reason, consecutive_losses)."""
-    from scanner import get_auto_state
-    return {"ok": True, **get_auto_state()}
-
-
-@app.get("/api/reports/weekly")
-async def get_weekly_reports():
-    """Return the last 8 stored weekly performance reports (newest first)."""
-    return {"ok": True, "reports": list(reversed(_weekly_reports))}
-
-
-@app.post("/api/reports/weekly/generate")
-async def generate_weekly_report():
-    """Manually trigger a weekly report generation (for testing / on-demand)."""
-    try:
-        from trade_executor import get_weekly_stats
-        now   = datetime.now(timezone.utc)
-        stats = await get_weekly_stats()
-        stats["generated_at"] = now.isoformat()
-        stats["week_num"]     = now.isocalendar()[1]
-
-        _weekly_reports.append(stats)
-        if len(_weekly_reports) > 8:
-            _weekly_reports.pop(0)
-
-        await manager.broadcast(json.dumps({"weekly_report": stats}))
-        return {"ok": True, "report": stats}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
-
-
-@app.get("/api/trade/positions")
-async def get_open_positions():
-    """Return all open MT5 positions."""
-    if not os.getenv("METAAPI_TOKEN"):
-        return {"ok": False, "positions": [], "error": "METAAPI_TOKEN not configured"}
-    try:
-        from trade_executor import get_positions
-        positions = await get_positions()
-        return {"ok": True, "positions": positions}
-    except Exception as e:
-        return {"ok": False, "positions": [], "error": str(e)}
 
 
 # ── Web Push endpoints ────────────────────────────────────────────────────────

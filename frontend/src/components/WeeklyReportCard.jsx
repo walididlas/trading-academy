@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { API_BASE } from '../config'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -178,26 +177,15 @@ export default function WeeklyReportCard() {
 
   const load = useCallback(async () => {
     try {
-      // Merge server-stored reports with localStorage reports, dedupe by week_num
-      const res = await fetch(`${API_BASE}/api/reports/weekly`)
-      const data = await res.json()
-      const serverReports = data.reports || []
-
       const local = (() => {
         try { return JSON.parse(localStorage.getItem('weekly_reports') || '[]') } catch { return [] }
       })()
 
-      // Merge: server + local, dedup by week_num (server preferred), newest first
-      const map = new Map()
-      ;[...local, ...serverReports].forEach(r => {
-        const key = r.week_num ?? r.week_start ?? JSON.stringify(r)
-        map.set(key, r)  // server overwrites local for same week
-      })
-      const merged = Array.from(map.values())
+      const sorted = [...local]
         .sort((a, b) => (b.week_num ?? 0) - (a.week_num ?? 0))
         .slice(0, 8)
 
-      setReports(merged)
+      setReports(sorted)
     } catch (e) {
       setError('Could not load reports')
     } finally {
@@ -218,10 +206,7 @@ export default function WeeklyReportCard() {
 
   const handleGenerate = async () => {
     setGenerating(true)
-    try {
-      await fetch(`${API_BASE}/api/reports/weekly/generate`, { method: 'POST' })
-      await load()
-    } catch (_) {}
+    await load()
     setGenerating(false)
   }
 
