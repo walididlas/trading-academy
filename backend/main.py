@@ -62,6 +62,9 @@ async def _kz_open_scheduler():
     while True:
         await asyncio.sleep(60)
         now = datetime.now(timezone.utc)
+        # Skip entirely on weekends — no Kill Zones fire Sat/Sun
+        if now.weekday() >= 5:
+            continue
         t   = now.hour * 60 + now.minute
 
         # ── 5-min warning ──────────────────────────────────────────────────────

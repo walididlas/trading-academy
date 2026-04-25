@@ -124,6 +124,10 @@ def get_signal_snapshot(pair: str) -> dict | None:
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
+def _is_weekend() -> bool:
+    """True on UTC Saturday (5) and Sunday (6) — forex markets are closed."""
+    return _utc_now().weekday() >= 5
+
 def _total_mins(dt: datetime) -> int:
     return dt.hour * 60 + dt.minute
 
@@ -701,10 +705,12 @@ def _score_pair(
 async def _auto_execute(sig: dict, broadcast: Callable) -> None:
     """
     Auto-execute a STRONG signal on MT5 via MetaApi.
-    Guards: METAAPI_TOKEN must be set, 5% daily loss limit, one trade per pair per hour.
+    Guards: METAAPI_TOKEN must be set, weekends, 5% daily loss limit, one trade per pair per hour.
     """
     if not os.getenv("METAAPI_TOKEN"):
         return                          # silently skip in dev / if not configured
+    if _is_weekend():
+        return                          # markets closed Sat/Sun
 
     pair = sig.get("pair", "")
     entry = sig.get("entry")
@@ -853,6 +859,26 @@ async def run_scanner(broadcast: Callable, get_ohlcv_fn: Callable) -> None:
 
     while True:
         try:
+            # ── Weekend: markets closed — emit closed signals and skip scoring ──
+            if _is_weekend():
+                closed_signals = [
+                    {
+                        "pair":      pair,
+                        "score":     0,
+                        "grade":     "CLOSED",
+                        "reason":    "Markets closed — opens Monday",
+                        "direction": None,
+                        "timestamp": _utc_now().isoformat(),
+                        "criteria":  {},
+                    }
+                    for pair in PAIRS
+                ]
+                _last_signals = closed_signals
+                await broadcast(json.dumps({"signals": closed_signals, "market_closed": True}))
+                # Check every 5 minutes on weekends — no point scanning more often
+                await asyncio.sleep(300)
+                continue
+
             signals:       list[dict] = []
             strong_alerts: list[dict] = []
             smart_events:  list[dict] = []   # extra WS events for targeted alerts

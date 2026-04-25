@@ -11,10 +11,29 @@ import CalendarStrip from '../components/CalendarStrip'
 
 const PAIRS = ['XAUUSD', 'EURUSD', 'GBPUSD', 'GBPJPY']
 
+// ── Weekend helper ─────────────────────────────────────────────────────────────
+function isWeekend() {
+  const d = new Date().getUTCDay()  // 0 = Sun, 6 = Sat
+  return d === 0 || d === 6
+}
+
+// Minutes until next Monday 09:00 UTC (= London KZ open)
+function minsUntilMondayOpen() {
+  const now = new Date()
+  const day = now.getUTCDay()       // 0=Sun, 6=Sat
+  const mins = now.getUTCHours() * 60 + now.getUTCMinutes()
+  // Days until Monday
+  const daysToMon = day === 0 ? 1 : day === 6 ? 2 : 0
+  const totalMins = daysToMon * 24 * 60 + (9 * 60 - mins)
+  return Math.max(0, totalMins)
+}
+
 // ── Morocco Kill Zone clock ───────────────────────────────────────────────────
 function KillZoneClock() {
   const [now, setNow] = useState(new Date())
   useEffect(() => { const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t) }, [])
+
+  const weekend = isWeekend()
 
   const utcMins = now.getUTCHours() * 60 + now.getUTCMinutes()
   const morMins = utcMins + 60
@@ -22,11 +41,16 @@ function KillZoneClock() {
   const morM = morMins % 60
   const morStr = `${String(morH).padStart(2,'0')}:${String(morM).padStart(2,'0')}`
 
-  const inLondon = utcMins >= 9 * 60 && utcMins < 12 * 60
-  const inNY     = utcMins >= 14 * 60 + 30 && utcMins < 17 * 60 + 30
+  const inLondon = !weekend && utcMins >= 9 * 60 && utcMins < 12 * 60
+  const inNY     = !weekend && utcMins >= 14 * 60 + 30 && utcMins < 17 * 60 + 30
   const inKZ     = inLondon || inNY
 
   function nextKZ() {
+    if (weekend) {
+      const m = minsUntilMondayOpen()
+      const h = Math.floor(m / 60), rem = m % 60
+      return { name: 'London KZ Mon', label: h > 0 ? `${h}h ${rem}m` : `${rem}m`, active: false, closed: true }
+    }
     if (inLondon) return { name: 'London KZ', label: 'ACTIVE', active: true }
     if (inNY)     return { name: 'NY KZ',     label: 'ACTIVE', active: true }
     let minsLeft
@@ -46,38 +70,62 @@ function KillZoneClock() {
           <div className="label-caps" style={{ marginBottom: 3 }}>Morocco Time</div>
           <div style={{
             fontFamily: "'JetBrains Mono', monospace", fontSize: '1.5rem',
-            fontWeight: 700, color: inKZ ? 'var(--gold)' : 'var(--text)',
+            fontWeight: 700, color: inKZ ? 'var(--gold)' : weekend ? 'var(--text-3)' : 'var(--text)',
           }}>
             {morStr}
           </div>
+          {weekend && (
+            <div style={{ fontSize: '0.7rem', color: 'var(--text-4)', marginTop: 2 }}>Weekend</div>
+          )}
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
           {[
             { name: 'London', mor: '10:00–13:00', utcStart: 9*60, utcEnd: 12*60 },
             { name: 'NY',     mor: '15:30–18:30', utcStart: 14*60+30, utcEnd: 17*60+30 },
           ].map(z => {
-            const active = utcMins >= z.utcStart && utcMins < z.utcEnd
+            const active = !weekend && utcMins >= z.utcStart && utcMins < z.utcEnd
             return (
               <div key={z.name} style={{
                 padding: '8px 12px', borderRadius: 'var(--r)',
-                background: active ? 'var(--gold-pale)' : 'var(--surface-2)',
+                background: weekend ? 'var(--surface-2)' : active ? 'var(--gold-pale)' : 'var(--surface-2)',
                 border: `1px solid ${active ? 'var(--gold-ring)' : 'var(--border)'}`,
+                opacity: weekend ? 0.45 : 1,
               }}>
                 <div style={{ fontSize: '0.78rem', fontWeight: 700, color: active ? 'var(--gold)' : 'var(--text-2)' }}>{z.name} KZ</div>
                 <div style={{ fontSize: '0.7rem', color: 'var(--text-3)' }}>{z.mor}</div>
                 {active && <div style={{ fontSize: '0.68rem', color: 'var(--green)', fontWeight: 700, marginTop: 2 }}>● ACTIVE</div>}
+                {weekend && <div style={{ fontSize: '0.65rem', color: 'var(--text-4)', marginTop: 2 }}>Closed</div>}
               </div>
             )
           })}
         </div>
         <div style={{ textAlign: 'right' }}>
-          <div className="label-caps" style={{ marginBottom: 3 }}>{next.active ? 'Now Active' : 'Opens In'}</div>
+          <div className="label-caps" style={{ marginBottom: 3 }}>
+            {next.active ? 'Now Active' : next.closed ? 'Opens In' : 'Opens In'}
+          </div>
           <div style={{ fontWeight: 700, color: next.active ? 'var(--gold)' : 'var(--text)' }}>{next.name}</div>
           <div style={{ fontSize: '0.85rem', color: next.active ? 'var(--green)' : 'var(--text-3)', fontFamily: "'JetBrains Mono', monospace" }}>
             {next.label}
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ── Weekend countdown (live ticker showing hours/mins until Monday open) ───────
+function WeekendCountdown() {
+  const [now, setNow] = useState(new Date())
+  useEffect(() => { const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t) }, [])
+  const m = Math.max(0, minsUntilMondayOpen())
+  const h = Math.floor(m / 60), rem = m % 60
+  const s = Math.floor((now - 0) / 1000 % 60)
+  return (
+    <div style={{
+      fontFamily: "'JetBrains Mono', monospace", fontWeight: 700,
+      fontSize: '1rem', color: 'var(--text-2)',
+    }}>
+      {String(h).padStart(2,'0')}:{String(rem).padStart(2,'0')}:{String(s).padStart(2,'0')}
     </div>
   )
 }
@@ -765,10 +813,11 @@ export default function Signals() {
     }
   }
 
-  const activeSignals   = signals.filter(s => s.grade === 'STRONG' || s.grade === 'WATCH')
-  const monitoring      = signals.filter(s => s.grade === 'MONITORING')
+  const weekend         = isWeekend()
+  const activeSignals   = weekend ? [] : signals.filter(s => s.grade === 'STRONG' || s.grade === 'WATCH')
+  const monitoring      = weekend ? [] : signals.filter(s => s.grade === 'MONITORING')
   const utcMins         = new Date().getUTCHours() * 60 + new Date().getUTCMinutes()
-  const inKZ            = (utcMins >= 9 * 60 && utcMins < 12 * 60) || (utcMins >= 14 * 60 + 30 && utcMins < 17 * 60 + 30)
+  const inKZ            = !weekend && ((utcMins >= 9 * 60 && utcMins < 12 * 60) || (utcMins >= 14 * 60 + 30 && utcMins < 17 * 60 + 30))
 
   return (
     <div className="page fade-in">
@@ -829,6 +878,36 @@ export default function Signals() {
 
       <KillZoneClock />
 
+      {/* Weekend banner */}
+      {weekend && (
+        <div style={{
+          background: 'var(--surface-2)',
+          border: '1px solid var(--border)',
+          borderRadius: 'var(--r)',
+          padding: '14px 18px',
+          marginBottom: 16,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 14,
+        }}>
+          <span style={{ fontSize: '1.4rem' }}>🌙</span>
+          <div>
+            <div style={{ fontWeight: 700, fontSize: '0.95rem', color: 'var(--text)' }}>
+              Weekend — Markets Closed
+            </div>
+            <div style={{ fontSize: '0.8rem', color: 'var(--text-3)', marginTop: 2 }}>
+              Opens Monday 10:00 Morocco · London Kill Zone · Auto-execution disabled
+            </div>
+          </div>
+          <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+            <div style={{ fontSize: '0.7rem', color: 'var(--text-4)', fontFamily: "'JetBrains Mono', monospace" }}>
+              OPENS IN
+            </div>
+            <WeekendCountdown />
+          </div>
+        </div>
+      )}
+
       {/* News risk strip — 4 pairs traffic light */}
       <CalendarStrip riskByPair={riskByPair} nextEventByPair={nextEventByPair} />
 
@@ -856,18 +935,46 @@ export default function Signals() {
         </div>
       )}
 
-      {lastRefresh && (
+      {!weekend && lastRefresh && (
         <div style={{ fontSize: '0.68rem', color: 'var(--text-4)', marginBottom: 12 }}>
           Last scan {lastRefresh.toLocaleTimeString('fr-MA', { hour: '2-digit', minute: '2-digit', timeZone: 'Africa/Casablanca' })} Morocco · Scans every 2 min
         </div>
       )}
 
+      {/* ── Weekend closed cards ────────────────────────────────────────────── */}
+      {weekend && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20 }}>
+          {PAIRS.map(pair => (
+            <div key={pair} style={{
+              display: 'flex', alignItems: 'center', gap: 14,
+              padding: '16px 18px', borderRadius: 'var(--r)',
+              background: 'var(--surface-2)',
+              border: '1px solid var(--border)',
+              opacity: 0.7,
+            }}>
+              <div style={{
+                width: 52, height: 52, borderRadius: '50%',
+                background: 'var(--surface-3)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                flexShrink: 0,
+              }}>
+                <span style={{ fontSize: '1.3rem' }}>🌙</span>
+              </div>
+              <div>
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, marginBottom: 3 }}>{pair}</div>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-3)' }}>Markets closed — opens Monday</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Active signals (STRONG + WATCH) */}
-      {loading ? (
+      {!weekend && loading ? (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {[1,2,3,4].map(i => <div key={i} className="skeleton" style={{ height: 80, borderRadius: 12 }} />)}
         </div>
-      ) : (
+      ) : !weekend && (
         <>
           {activeSignals.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
