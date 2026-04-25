@@ -345,6 +345,32 @@ function ExpiryBadge({ expiresAt }) {
   )
 }
 
+// ── Entry status badge ────────────────────────────────────────────────────────
+function EntryStatusBadge({ status }) {
+  if (!status || status === 'pending') return (
+    <span style={{
+      fontSize: '0.63rem', fontWeight: 700, padding: '2px 7px', borderRadius: 4,
+      background: 'rgba(148,163,184,0.12)', color: 'var(--text-4)',
+      border: '1px solid rgba(148,163,184,0.2)',
+    }}>⏳ Pending</span>
+  )
+  if (status === 'reached') return (
+    <span style={{
+      fontSize: '0.63rem', fontWeight: 700, padding: '2px 7px', borderRadius: 4,
+      background: 'rgba(34,211,165,0.12)', color: 'var(--green)',
+      border: '1px solid rgba(34,211,165,0.25)',
+    }}>✓ Entry Reached</span>
+  )
+  if (status === 'expired') return (
+    <span style={{
+      fontSize: '0.63rem', fontWeight: 700, padding: '2px 7px', borderRadius: 4,
+      background: 'rgba(248,113,113,0.12)', color: 'var(--red)',
+      border: '1px solid rgba(248,113,113,0.25)',
+    }}>✗ Expired</span>
+  )
+  return null
+}
+
 // ── STRONG signal card ────────────────────────────────────────────────────────
 function SignalCard({ signal, calcLots, riskPct, onPaperTrade, onSetAlert, newsRisk }) {
   const [expanded, setExpanded] = useState(signal.grade === 'STRONG')
@@ -432,6 +458,7 @@ function SignalCard({ signal, calcLots, riskPct, onPaperTrade, onSetAlert, newsR
                   {signal.premium_discount.zone}
                 </span>
               )}
+              {signal.entry_status && <EntryStatusBadge status={signal.entry_status} />}
               {signal.expires_at && <ExpiryBadge expiresAt={signal.expires_at} />}
               <NewsShield risk={newsRisk} />
             </div>
@@ -570,13 +597,14 @@ function MonitoringRow({ signal }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function Signals() {
-  const { signals: ctxSignals, news, wsStatus, permission, requestPermission } = useAlerts()
+  const { signals: ctxSignals, news, wsStatus, permission, requestPermission, addToast } = useAlerts()
   const { balance, setBalance, riskPct, setRiskPct, calcLots, hasBalance } = useAccount()
   const { getNewsRiskForPair, riskByPair, nextEventByPair } = useCalendar()
   const [signals, setSignals] = useState([])
   const [loading, setLoading] = useState(true)
   const [lastRefresh, setLastRefresh] = useState(null)
   const [showAccountModal, setShowAccountModal] = useState(false)
+  const [outcomeConfirmed, setOutcomeConfirmed] = useState(null)  // { pair, label }
   const priceAlerts = useRef({})  // { pair: entry }
 
   // Seed from REST, then WS takes over
@@ -585,6 +613,49 @@ export default function Signals() {
       .then(r => r.json())
       .then(d => { setSignals(d.signals || []); setLastRefresh(new Date()); setLoading(false) })
       .catch(() => { setLoading(false) })
+  }, [])
+
+  // Process outcome URL params (app was closed when notification fired, SW opened it)
+  useEffect(() => {
+    const params  = new URLSearchParams(window.location.search)
+    const outcome = params.get('outcome')
+    const pair    = params.get('pair')
+    if (!outcome || !pair) return
+
+    const LABELS = { taken: 'Took the trade', missed: 'Missed entry', skipped: 'Skipped' }
+    try {
+      const stored = JSON.parse(localStorage.getItem(`ta_outcome_pending_${pair}`) || 'null')
+      const sig    = stored?.signal ?? {}
+      const entry  = {
+        id:          `outcome_${Date.now()}`,
+        date:        new Date().toISOString().slice(0, 10),
+        pair,
+        direction:   sig.direction ?? '',
+        entry:       sig.entry?.toString() ?? '',
+        sl:          sig.sl?.toString() ?? '',
+        tp:          sig.tp1?.toString() ?? '',
+        result:      outcome === 'taken' ? '' : outcome,
+        outcome,
+        reasoning:   LABELS[outcome] ?? outcome,
+        signalScore: sig.score ?? null,
+        signalGrade: sig.grade ?? null,
+        auto:        true,
+        type:        'outcome_check',
+      }
+      const existing = JSON.parse(localStorage.getItem('trading_journal') || '[]')
+      const cutoff   = Date.now() - 2 * 60 * 60 * 1000
+      const isDup    = existing.some(t =>
+        t.type === 'outcome_check' && t.pair === pair &&
+        parseInt(t.id?.replace('outcome_', '') ?? '0', 10) > cutoff
+      )
+      if (!isDup) {
+        localStorage.setItem('trading_journal', JSON.stringify([entry, ...existing]))
+        setOutcomeConfirmed({ pair, label: LABELS[outcome] ?? outcome })
+        setTimeout(() => setOutcomeConfirmed(null), 5000)
+      }
+    } catch (_) {}
+    window.history.replaceState({}, '', window.location.pathname)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
@@ -697,6 +768,20 @@ export default function Signals() {
           </div>
         </div>
       </div>
+
+      {/* Outcome recorded confirmation */}
+      {outcomeConfirmed && (
+        <div style={{
+          background: 'rgba(34,211,165,0.1)', border: '1px solid rgba(34,211,165,0.3)',
+          borderRadius: 'var(--r)', padding: '10px 14px', marginBottom: 14,
+          display: 'flex', alignItems: 'center', gap: 10, fontSize: '0.85rem',
+        }}>
+          <span>✅</span>
+          <span style={{ color: 'var(--green)', fontWeight: 600 }}>
+            {outcomeConfirmed.pair} outcome recorded — {outcomeConfirmed.label}
+          </span>
+        </div>
+      )}
 
       {/* Notification prompt */}
       {permission === 'default' && (

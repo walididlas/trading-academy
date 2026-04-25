@@ -135,6 +135,46 @@ function getOpenTrades() {
   }
 }
 
+// ── Outcome journal helpers ──────────────────────────────────────────────────
+function _outcomeLabel(outcome) {
+  if (outcome === 'taken')   return 'Took the trade'
+  if (outcome === 'missed')  return 'Price never reached entry level'
+  if (outcome === 'skipped') return 'Chose to skip this setup'
+  return outcome
+}
+
+function _writeOutcomeToJournal(pair, outcome, signal, ts) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(`ta_outcome_pending_${pair}`) || 'null')
+    const sig    = signal ?? stored?.signal ?? {}
+    const entry  = {
+      id:          `outcome_${Date.now()}`,
+      date:        (ts ?? new Date().toISOString()).slice(0, 10),
+      pair:        pair,
+      direction:   sig.direction ?? '',
+      entry:       sig.entry?.toString() ?? '',
+      sl:          sig.sl?.toString() ?? '',
+      tp:          sig.tp1?.toString() ?? '',
+      result:      outcome === 'taken' ? '' : outcome,   // '' = open/taken; 'missed'/'skipped'
+      outcome,
+      reasoning:   _outcomeLabel(outcome),
+      signalScore: sig.score ?? null,
+      signalGrade: sig.grade ?? null,
+      auto:        true,
+      type:        'outcome_check',
+    }
+    const existing = JSON.parse(localStorage.getItem('trading_journal') || '[]')
+    const cutoff   = Date.now() - 2 * 60 * 60 * 1000   // 2-hour dedup window
+    const isDup    = existing.some(t =>
+      t.type === 'outcome_check' && t.pair === pair &&
+      parseInt(t.id?.replace('outcome_', '') ?? '0', 10) > cutoff
+    )
+    if (!isDup) {
+      localStorage.setItem('trading_journal', JSON.stringify([entry, ...existing]))
+    }
+  } catch (_) {}
+}
+
 export function AlertProvider({ children }) {
   const [signals, setSignals] = useState([])
   const [news, setNews] = useState([])
@@ -206,6 +246,24 @@ export function AlertProvider({ children }) {
     setUnreadCount(0)
   }, [])
 
+  // ── SW message listener — handles outcome action button clicks ─────────────
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return
+    const handler = (event) => {
+      if (event.data?.type !== 'signal_outcome') return
+      const { pair, outcome, signal, ts } = event.data
+      _writeOutcomeToJournal(pair, outcome, signal, ts)
+      const icon = outcome === 'taken' ? '✅' : outcome === 'missed' ? '❌' : '⏭'
+      addToast({
+        type:  outcome === 'taken' ? 'signal' : 'killzone',
+        title: `${icon} ${pair} — ${_outcomeLabel(outcome)}`,
+        body:  'Recorded in your journal',
+      })
+    }
+    navigator.serviceWorker.addEventListener('message', handler)
+    return () => navigator.serviceWorker.removeEventListener('message', handler)
+  }, [addToast])
+
   // ── WebSocket ──────────────────────────────────────────────────────────────
   useEffect(() => {
     let ws
@@ -228,6 +286,17 @@ export function AlertProvider({ children }) {
             if (data.signals) {
               setSignals(data.signals)
               signalsRef.current = data.signals
+              // Store STRONG signal snapshots for outcome tracking
+              data.signals.forEach(sig => {
+                if (sig.grade === 'STRONG') {
+                  localStorage.setItem(
+                    `ta_outcome_pending_${sig.pair}`,
+                    JSON.stringify({ signal: sig, pushed_at: Date.now() })
+                  )
+                } else {
+                  localStorage.removeItem(`ta_outcome_pending_${sig.pair}`)
+                }
+              })
             }
 
             if (data.news_update) {
@@ -324,6 +393,41 @@ export function AlertProvider({ children }) {
               showNativeNotif(title, body, 'kz-warning')
             }
 
+            // ── Entry expired (4h without price reaching entry) ─────────────
+            if (data.entry_expired) {
+              const x   = data.entry_expired
+              const dir = x.direction === 'long' ? '▲ LONG' : '▼ SHORT'
+              const title = `⏱ ${x.pair} ${dir} — Entry Expired`
+              const body  = `Price never reached ${x.entry} in 4h · Re-scanning for fresh setup`
+              addToast({ type: 'warning', title, body })
+              showNativeNotif(title, body, `expired-${x.pair}`)
+              // Auto-log to journal
+              try {
+                const entry = {
+                  id:          `expired_${Date.now()}`,
+                  date:        (x.ts ?? new Date().toISOString()).slice(0, 10),
+                  pair:        x.pair,
+                  direction:   x.direction,
+                  entry:       x.entry?.toString() ?? '',
+                  result:      'missed',
+                  outcome:     'missed',
+                  reasoning:   `Entry expired — price never reached ${x.entry} within 4 hours`,
+                  signalScore: x.score,
+                  auto:        true,
+                  type:        'entry_expired',
+                }
+                const existing = JSON.parse(localStorage.getItem('trading_journal') || '[]')
+                const cutoff   = Date.now() - 4 * 60 * 60 * 1000
+                const isDup    = existing.some(t =>
+                  t.type === 'entry_expired' && t.pair === x.pair &&
+                  parseInt(t.id?.replace('expired_', '') ?? '0', 10) > cutoff
+                )
+                if (!isDup) {
+                  localStorage.setItem('trading_journal', JSON.stringify([entry, ...existing]))
+                }
+              } catch (_) {}
+            }
+
             // ── Watch alert (score 70+) ──────────────────────────────────────
             if (data.watch_alert) {
               const w   = data.watch_alert
@@ -401,7 +505,7 @@ export function AlertProvider({ children }) {
   }, [])
 
   return (
-    <AlertContext.Provider value={{ signals, news, toasts, dismiss, permission, requestPermission, pushSubscribed, wsStatus, alertHistory, unreadCount, markRead }}>
+    <AlertContext.Provider value={{ signals, news, toasts, addToast, dismiss, permission, requestPermission, pushSubscribed, wsStatus, alertHistory, unreadCount, markRead }}>
       {children}
     </AlertContext.Provider>
   )

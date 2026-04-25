@@ -122,3 +122,59 @@ async def send_push(
 
     if errors:
         logger.warning("%d push send error(s) for this batch", errors)
+
+
+async def send_push_with_actions(
+    title:   str,
+    body:    str,
+    tag:     str,
+    actions: list[dict],
+    pair:    str = "",
+    signal:  dict | None = None,
+) -> None:
+    """
+    Send a push notification that includes action buttons (e.g. outcome checks).
+    The payload is read by the service worker, which renders the buttons.
+    """
+    if not VAPID_PRIVATE_KEY:
+        return
+    if not _subscriptions:
+        return
+
+    # Include only JSON-serialisable signal fields to keep payload compact
+    sig_compact: dict | None = None
+    if signal:
+        sig_compact = {k: signal[k] for k in (
+            "pair", "direction", "entry", "sl", "tp1", "tp2", "score", "grade",
+            "timestamp", "expires_at",
+        ) if k in signal}
+
+    payload = json.dumps({
+        "title":   title,
+        "body":    body,
+        "tag":     tag,
+        "type":    "outcome_check",
+        "url":     "/signals",
+        "actions": actions,
+        "pair":    pair,
+        "signal":  sig_compact,
+    })
+
+    loop = asyncio.get_event_loop()
+    dead   = []
+    errors = 0
+
+    for sub in list(_subscriptions):
+        try:
+            expired = await loop.run_in_executor(None, _send_one_sync, sub, payload)
+            if expired:
+                dead.append(expired)
+        except Exception as exc:
+            errors += 1
+            logger.warning("Push send error (outcome): %s", exc)
+
+    for ep in dead:
+        remove_subscription(ep)
+
+    if errors:
+        logger.warning("%d push send error(s) for outcome batch", errors)

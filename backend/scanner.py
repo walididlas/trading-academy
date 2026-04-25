@@ -41,6 +41,10 @@ _last_signals: list[dict] = []
 # ── Previous criteria state — for smart transition alerts ─────────────────────
 _last_criteria: dict[str, dict] = {}   # pair → criteria dict from last scan
 
+# ── Per-pair STRONG signal tracking (entry status + expiry) ───────────────────
+_strong_state: dict[str, dict] = {}
+# pair → { fired_at: ISO str, signal: dict, entry_status: 'pending'|'reached'|'expired' }
+
 
 # ─────────────────────────────── Helpers ──────────────────────────────────────
 
@@ -623,6 +627,36 @@ def _score_pair(
     }
 
 
+# ─────────────────── Outcome check ───────────────────────────────────────────
+
+async def _schedule_outcome_check(pair: str, sig: dict) -> None:
+    """
+    30 minutes after a STRONG signal fires, send a follow-up push notification
+    asking the user if they took the trade.  Three action buttons are included:
+    taken / missed / skipped.
+    """
+    await asyncio.sleep(30 * 60)
+    try:
+        from push_notifier import send_push_with_actions
+        _dir   = sig.get("direction", "long")
+        _arrow = "▲ LONG" if _dir == "long" else "▼ SHORT"
+        _entry = sig.get("entry", "—")
+        await send_push_with_actions(
+            title=f"📋 Did you take {pair} {_arrow}?",
+            body=f"STRONG signal · Entry {_entry} · Score {sig.get('score')}pts · 30 min ago",
+            tag=f"outcome-{pair}",
+            actions=[
+                {"action": "taken",   "title": "✅ Yes, taken"},
+                {"action": "missed",  "title": "❌ Missed entry"},
+                {"action": "skipped", "title": "⏭ Skipped"},
+            ],
+            pair=pair,
+            signal=sig,
+        )
+    except Exception:
+        pass
+
+
 # ─────────────────── Scanner Loop ─────────────────────────────────────────────
 
 async def run_scanner(broadcast: Callable, get_ohlcv_fn: Callable) -> None:
@@ -671,6 +705,7 @@ async def run_scanner(broadcast: Callable, get_ohlcv_fn: Callable) -> None:
 
                 signals.append(sig)
 
+                now       = _utc_now()
                 prev      = next((s for s in _last_signals if s.get("pair") == pair), None)
                 prev_crit = _last_criteria.get(pair, {})
                 curr_crit = sig.get("criteria", {})
@@ -678,6 +713,78 @@ async def run_scanner(broadcast: Callable, get_ohlcv_fn: Callable) -> None:
                 prev_grade = prev.get("grade") if prev else None
                 prev_score = prev.get("score", 0) if prev else 0
                 curr_score = sig.get("score", 0)
+
+                # ── Entry status tracking (expiry + reached detection) ─────────
+                curr_grade = sig.get("grade")
+                if curr_grade == "STRONG":
+                    if pair not in _strong_state or prev_grade != "STRONG":
+                        # New STRONG — initialise tracking
+                        _strong_state[pair] = {
+                            "fired_at":     now.isoformat(),
+                            "signal":       dict(sig),
+                            "entry_status": "pending",
+                        }
+                    else:
+                        st = _strong_state[pair]
+                        if st["entry_status"] == "pending":
+                            # Check if price reached original entry
+                            cur_price  = h1_bars[-1]["close"] if h1_bars else None
+                            orig_entry = st["signal"].get("entry")
+                            direction  = st["signal"].get("direction")
+                            if cur_price and orig_entry:
+                                tol = 5 * _pip_size(pair)
+                                ep  = float(orig_entry)
+                                if ((direction == "long"  and cur_price <= ep + tol) or
+                                        (direction == "short" and cur_price >= ep - tol)):
+                                    st["entry_status"] = "reached"
+                            # Check 4-hour expiry
+                            try:
+                                fired_dt = datetime.fromisoformat(st["fired_at"])
+                                if (now - fired_dt).total_seconds() >= SIGNAL_EXPIRY:
+                                    st["entry_status"] = "expired"
+                                    orig_sig = st["signal"]
+                                    smart_events.append({
+                                        "entry_expired": {
+                                            "pair":      pair,
+                                            "direction": orig_sig.get("direction"),
+                                            "entry":     orig_sig.get("entry"),
+                                            "score":     orig_sig.get("score"),
+                                            "fired_at":  st["fired_at"],
+                                            "ts":        now.isoformat(),
+                                        }
+                                    })
+                                    # Restart tracking with the current (fresh) signal
+                                    _strong_state[pair] = {
+                                        "fired_at":     now.isoformat(),
+                                        "signal":       dict(sig),
+                                        "entry_status": "pending",
+                                    }
+                                    # Schedule outcome check for fresh setup
+                                    asyncio.create_task(_schedule_outcome_check(pair, sig))
+                                    # Push fresh-setup alert if levels moved materially
+                                    new_e  = float(sig.get("entry") or 0)
+                                    orig_e = float(orig_sig.get("entry") or 0)
+                                    if (abs(new_e - orig_e) > 5 * _pip_size(pair) or
+                                            sig.get("direction") != orig_sig.get("direction")):
+                                        try:
+                                            from push_notifier import send_push
+                                            _dir2   = sig.get("direction", "long")
+                                            _arrow2 = "▲ BUY" if _dir2 == "long" else "▼ SELL"
+                                            asyncio.create_task(send_push(
+                                                title=f"🔄 {pair} {_arrow2} — Fresh Setup",
+                                                body=(
+                                                    f"Prev. entry expired · New entry {sig.get('entry')} "
+                                                    f"· SL {sig.get('sl')} · TP1 {sig.get('tp1')} · Score {sig.get('score')}pts"
+                                                ),
+                                                tag=f"signal-{pair}", type_="signal", url="/signals",
+                                            ))
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
+                    sig["entry_status"] = _strong_state.get(pair, {}).get("entry_status", "pending")
+                elif pair in _strong_state:
+                    del _strong_state[pair]
 
                 # ── STRONG transition → push alert (manual execution on MT5) ────
                 if sig.get("grade") == "STRONG" and prev_grade != "STRONG":
@@ -702,6 +809,8 @@ async def run_scanner(broadcast: Callable, get_ohlcv_fn: Callable) -> None:
                         ))
                     except Exception:
                         pass
+                    # Schedule 30-min outcome check
+                    asyncio.create_task(_schedule_outcome_check(pair, sig))
 
                 # ── Score crosses 70 for the first time (WATCH alert) ──────────
                 elif curr_score >= 70 and prev_score < 70 and sig.get("grade") != "STRONG":

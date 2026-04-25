@@ -51,9 +51,29 @@ function saveTrades(trades) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(trades))
 }
 
+// ── Outcome stats ─────────────────────────────────────────────────────────────
+function calcOutcomeStats(trades) {
+  const outcomed = trades.filter(t => t.outcome)
+  if (!outcomed.length) return null
+  const taken   = outcomed.filter(t => t.outcome === 'taken').length
+  const missed  = outcomed.filter(t => t.outcome === 'missed').length
+  const skipped = outcomed.filter(t => t.outcome === 'skipped').length
+  const total   = outcomed.length
+  // Win rate on taken trades that have a result
+  const takenClosed = outcomed.filter(t => t.outcome === 'taken' && (t.result === 'win' || t.result === 'loss'))
+  const takenWins   = takenClosed.filter(t => t.result === 'win').length
+  return {
+    total, taken, missed, skipped,
+    takenPct:   Math.round(taken   / total * 100),
+    missedPct:  Math.round(missed  / total * 100),
+    skippedPct: Math.round(skipped / total * 100),
+    takenWinRate: takenClosed.length ? Math.round(takenWins / takenClosed.length * 100) : null,
+  }
+}
+
 // ── Stats calculator ──────────────────────────────────────────────────────────
 function calcStats(trades) {
-  const closed = trades.filter(t => t.result && t.result !== '')
+  const closed = trades.filter(t => t.result === 'win' || t.result === 'loss')
   if (!closed.length) return null
   const wins   = closed.filter(t => t.result === 'win')
   const losses = closed.filter(t => t.result === 'loss')
@@ -89,7 +109,7 @@ function calcStats(trades) {
 function EquityCurve({ trades }) {
   const closed = useMemo(() =>
     trades
-      .filter(t => t.result && t.result !== '' && !isNaN(parseFloat(t.pips)))
+      .filter(t => (t.result === 'win' || t.result === 'loss') && !isNaN(parseFloat(t.pips)))
       .sort((a, b) => a.date.localeCompare(b.date)),
   [trades])
 
@@ -458,12 +478,18 @@ function TradeCard({ trade, onEdit, onDelete }) {
           )}
 
           {/* Result */}
-          {!isOpen && (
+          {trade.outcome === 'missed' && (
+            <span className="tag tag-gold">❌ MISSED ENTRY</span>
+          )}
+          {trade.outcome === 'skipped' && (
+            <span className="tag tag-gray">⏭ SKIPPED</span>
+          )}
+          {!trade.outcome && !isOpen && (
             <span className={`tag ${trade.result === 'win' ? 'tag-green' : trade.result === 'loss' ? 'tag-red' : 'tag-gray'}`}>
               {trade.result === 'win' ? '✓ WIN' : trade.result === 'loss' ? '✗ LOSS' : 'BE'}
             </span>
           )}
-          {isOpen && <span className="tag tag-gold">● OPEN</span>}
+          {!trade.outcome && isOpen && <span className="tag tag-gold">● OPEN</span>}
 
           {/* Pips */}
           {!isNaN(pipsNum) && trade.pips !== '' && (
@@ -627,6 +653,52 @@ function GradeBar({ grades, total }) {
   )
 }
 
+// ── Outcome summary panel ─────────────────────────────────────────────────────
+function OutcomeSummary({ stats }) {
+  if (!stats) return null
+  const bars = [
+    { label: 'Taken',   count: stats.taken,   pct: stats.takenPct,   color: 'var(--green)' },
+    { label: 'Missed',  count: stats.missed,  pct: stats.missedPct,  color: 'var(--gold)'  },
+    { label: 'Skipped', count: stats.skipped, pct: stats.skippedPct, color: 'var(--text-4)' },
+  ]
+  return (
+    <div style={{
+      background: 'var(--surface-2)', border: '1px solid var(--border)',
+      borderRadius: 'var(--r)', padding: '14px 16px', marginBottom: 16,
+    }}>
+      <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 10 }}>
+        Signal Outcome Tracking — {stats.total} responses
+      </div>
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 10 }}>
+        {bars.map(({ label, count, pct, color }) => (
+          <div key={label} style={{ flex: 1, minWidth: 80 }}>
+            <div style={{ fontSize: '0.68rem', color: 'var(--text-4)', marginBottom: 3 }}>{label}</div>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 800, fontSize: '1.2rem', color }}>{count}</div>
+            <div style={{ fontSize: '0.7rem', color: 'var(--text-3)' }}>{pct}%</div>
+          </div>
+        ))}
+        {stats.takenWinRate != null && (
+          <div style={{ flex: 1, minWidth: 80 }}>
+            <div style={{ fontSize: '0.68rem', color: 'var(--text-4)', marginBottom: 3 }}>Win Rate (taken)</div>
+            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 800, fontSize: '1.2rem', color: stats.takenWinRate >= 50 ? 'var(--green)' : 'var(--red)' }}>
+              {stats.takenWinRate}%
+            </div>
+          </div>
+        )}
+      </div>
+      {/* Proportion bar */}
+      <div style={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', gap: 1 }}>
+        {bars.filter(b => b.count > 0).map(({ label, pct, color }) => (
+          <div key={label} style={{ flex: pct, background: color, borderRadius: 2, minWidth: 2 }} title={`${label}: ${pct}%`} />
+        ))}
+      </div>
+      <div style={{ fontSize: '0.68rem', color: 'var(--text-4)', marginTop: 6 }}>
+        You take {stats.takenPct}% of STRONG signals · skip {stats.skippedPct}% · miss entry on {stats.missedPct}%
+      </div>
+    </div>
+  )
+}
+
 // ── Main Journal page ─────────────────────────────────────────────────────────
 export default function Journal() {
   const [activeTab, setActiveTab] = useState('journal')  // 'journal' | 'replay'
@@ -638,19 +710,22 @@ export default function Journal() {
 
   useEffect(() => saveTrades(trades), [trades])
 
-  const stats = useMemo(() => calcStats(trades), [trades])
+  const stats        = useMemo(() => calcStats(trades), [trades])
+  const outcomeStats = useMemo(() => calcOutcomeStats(trades), [trades])
 
+  // Open trades = taken but result not yet recorded (real positions only)
   const openTrades = useMemo(() =>
-    trades.filter(t => !t.result || t.result === ''),
+    trades.filter(t => (!t.result || t.result === '') && t.outcome !== 'missed' && t.outcome !== 'skipped'),
   [trades])
 
+  // Closed trades = win/loss only (excludes missed/skipped outcomes)
   const closedTrades = useMemo(() =>
-    trades.filter(t => t.result && t.result !== ''),
+    trades.filter(t => t.result === 'win' || t.result === 'loss' || t.result === 'breakeven'),
   [trades])
 
   const filteredClosed = useMemo(() => {
     let ts = closedTrades
-    if (filterPair !== 'ALL')   ts = ts.filter(t => t.pair === filterPair)
+    if (filterPair   !== 'ALL') ts = ts.filter(t => t.pair   === filterPair)
     if (filterResult !== 'ALL') ts = ts.filter(t => t.result === filterResult.toLowerCase())
     return ts.sort((a, b) => b.date.localeCompare(a.date))
   }, [closedTrades, filterPair, filterResult])
@@ -784,6 +859,9 @@ export default function Journal() {
 
       {/* Equity curve */}
       <EquityCurve trades={trades} />
+
+      {/* Signal outcome summary */}
+      <OutcomeSummary stats={outcomeStats} />
 
       {/* Open trades */}
       {openTrades.length > 0 && (
