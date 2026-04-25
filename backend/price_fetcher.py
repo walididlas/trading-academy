@@ -51,6 +51,16 @@ def _is_weekend() -> bool:
     return datetime.now(timezone.utc).weekday() >= 5
 
 
+def _in_kill_zone() -> bool:
+    """
+    True during London KZ (09:00–12:00 UTC) or NY KZ (14:30–17:30 UTC).
+    M15 data is only fetched while this is True.
+    """
+    now  = datetime.now(timezone.utc)
+    mins = now.hour * 60 + now.minute
+    return (9 * 60 <= mins < 12 * 60) or (14 * 60 + 30 <= mins < 17 * 60 + 30)
+
+
 def _parse_bars(values: list[dict]) -> list[dict]:
     """
     Convert Twelve Data 'values' list to our bar format.
@@ -132,20 +142,32 @@ async def _fetch_one(
 
 async def fetch_all_pairs(ohlcv_cache: dict, session: aiohttp.ClientSession) -> None:
     """
-    Fetch H1 and M15 bars for every pair, one request at a time with a
-    _CALL_DELAY second pause between calls.
+    Fetch OHLCV data for every pair, one request at a time with _CALL_DELAY
+    seconds between calls.
 
-    Order: XAUUSD/1h, EURUSD/1h, GBPUSD/1h, GBPJPY/1h,
-           XAUUSD/15min, EURUSD/15min, GBPUSD/15min, GBPJPY/15min
-    Total: 8 calls × 10s delay = ~80 seconds, well within 8 req/min limit.
+    Timeframes fetched depend on market session:
+      • Outside Kill Zones: H1 only → 4 calls per cycle
+      • During Kill Zones:  H1 + M15 → 8 calls per cycle, 10s apart (~80s total)
+
+    This keeps Twelve Data free-tier usage well within 800 credits/day.
     """
     api_key = os.getenv("TWELVEDATA_API_KEY", "")
     if not api_key:
         logger.warning("TWELVEDATA_API_KEY not set — skipping price fetch")
         return
 
+    in_kz = _in_kill_zone()
+    # Outside KZ only fetch H1; inside KZ fetch H1 first then M15
+    active_tfs = list(_TF_MAP.items()) if in_kz else [("60", "1h")]
+
+    logger.debug(
+        "Price fetcher: %s session — fetching %s",
+        "KZ" if in_kz else "off-KZ",
+        [tf for tf, _ in active_tfs],
+    )
+
     first_call = True
-    for tf_code, td_interval in _TF_MAP.items():
+    for tf_code, td_interval in active_tfs:
         for pair, td_symbol in TD_SYMBOLS.items():
             # Rate-limit: pause before every call except the very first
             if not first_call:
@@ -162,6 +184,7 @@ async def fetch_all_pairs(ohlcv_cache: dict, session: aiohttp.ClientSession) -> 
                 "symbol":    pair,
                 "timeframe": tf_code,
                 "source":    "twelvedata",
+                "kz":        in_kz,
             }
             # Plain-symbol key for H1 backward compat with scanner
             if tf_code == "60":
@@ -189,8 +212,13 @@ async def run_price_fetcher(ohlcv_cache: dict, interval_seconds: int = 300) -> N
                 logger.info("Price fetcher: weekend — skipping fetch, markets closed")
             else:
                 try:
+                    in_kz = _in_kill_zone()
                     await fetch_all_pairs(ohlcv_cache, session)
-                    logger.info("Price fetcher: all pairs refreshed via Twelve Data")
+                    logger.info(
+                        "Price fetcher: refreshed (%s) — %d timeframe(s)",
+                        "KZ active" if in_kz else "off-KZ",
+                        2 if in_kz else 1,
+                    )
                 except Exception as exc:
                     logger.error("Price fetcher loop error: %s", exc)
 
