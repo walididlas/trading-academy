@@ -1,124 +1,169 @@
 """
-Autonomous OHLCV price fetcher using Yahoo Finance (yfinance).
+Autonomous OHLCV price fetcher using Twelve Data API.
 
 Fetches the last 200 H1 + 200 M15 candles for all tracked pairs every 5 minutes
 and writes them directly into the shared _ohlcv_cache in main.py.
 
-Yahoo Finance symbol mapping:
-  XAUUSD → GC=F   (COMEX Gold Futures front month — more reliable than XAUUSD=X)
-  EURUSD → EURUSD=X
-  GBPUSD → GBPUSD=X
-  GBPJPY → GBPJPY=X
+Twelve Data symbol mapping:
+  XAUUSD → XAU/USD
+  EURUSD → EUR/USD
+  GBPUSD → GBP/USD
+  GBPJPY → GBP/JPY
+
+All 4 pairs are fetched in a single batch call per timeframe, keeping daily
+API usage to ~576 calls (2 calls × 288 five-minute intervals) — well within
+the free-tier limit of 800 calls/day.
+
+Required env var: TWELVEDATA_API_KEY
 """
 import asyncio
 import logging
-from datetime import timezone
+import os
+
+import aiohttp
 
 logger = logging.getLogger(__name__)
 
-# Pair → Yahoo Finance ticker
-YF_SYMBOLS: dict[str, str] = {
-    "XAUUSD": "GC=F",       # COMEX Gold Futures (more reliable than XAUUSD=X)
-    "EURUSD": "EURUSD=X",
-    "GBPUSD": "GBPUSD=X",
-    "GBPJPY": "GBPJPY=X",
+# Pair → Twelve Data symbol
+TD_SYMBOLS: dict[str, str] = {
+    "XAUUSD": "XAU/USD",
+    "EURUSD": "EUR/USD",
+    "GBPUSD": "GBP/USD",
+    "GBPJPY": "GBP/JPY",
 }
 
-# Timeframe code → yfinance interval string + period for ~200 bars
-_TF_MAP = {
-    "60": ("1h",  "30d"),   # H1: 30 days ≈ 720 bars, we'll take last 200
-    "15": ("15m", "8d"),    # M15: 8 days ≈ 768 bars, take last 200
+# Alias kept so main.py's /api/feed/status import still works unchanged
+YF_SYMBOLS = TD_SYMBOLS
+
+BASE_URL = "https://api.twelvedata.com/time_series"
+
+# timeframe code → Twelve Data interval string
+_TF_MAP: dict[str, str] = {
+    "60": "1h",
+    "15": "15min",
 }
 
 
-def _fetch_bars_sync(yf_ticker: str, interval: str, period: str) -> list[dict]:
+def _parse_bars(values: list[dict]) -> list[dict]:
     """
-    Blocking yfinance download — run in executor to avoid blocking event loop.
-    Returns list of bar dicts: {time, open, high, low, close, volume}
+    Convert Twelve Data 'values' list to our bar format.
+    TD returns values newest-first; we reverse to oldest-first.
+    Datetime strings like "2024-01-01 10:00:00" are treated as UTC.
     """
-    import yfinance as yf
-
-    ticker = yf.Ticker(yf_ticker)
-    df = ticker.history(interval=interval, period=period, auto_adjust=True)
-
-    if df is None or df.empty:
-        return []
-
     bars = []
-    for ts, row in df.iterrows():
-        # ts is a pandas Timestamp — convert to UTC ISO string
+    for v in reversed(values):
         try:
-            if hasattr(ts, 'tz_convert'):
-                utc_ts = ts.tz_convert('UTC')
-            elif hasattr(ts, 'tz_localize') and ts.tzinfo is None:
-                utc_ts = ts.tz_localize('UTC')
-            else:
-                utc_ts = ts
-            iso = utc_ts.isoformat()
-        except Exception:
-            iso = str(ts)
-
-        bars.append({
-            "time":   iso,
-            "open":   float(row["Open"]),
-            "high":   float(row["High"]),
-            "low":    float(row["Low"]),
-            "close":  float(row["Close"]),
-            "volume": float(row.get("Volume", 0)),
-        })
-
-    # Return last 200 bars only
+            dt = v["datetime"]
+            # Normalise to ISO-8601 with UTC offset so downstream code parses cleanly
+            if "T" not in dt and "+" not in dt and "Z" not in dt:
+                dt = dt.replace(" ", "T") + "+00:00"
+            bars.append({
+                "time":   dt,
+                "open":   float(v["open"]),
+                "high":   float(v["high"]),
+                "low":    float(v["low"]),
+                "close":  float(v["close"]),
+                "volume": float(v.get("volume") or 0),
+            })
+        except (KeyError, ValueError, TypeError):
+            continue
     return bars[-200:]
 
 
-async def fetch_all_pairs(ohlcv_cache: dict) -> None:
+async def fetch_all_pairs(ohlcv_cache: dict, session: aiohttp.ClientSession) -> None:
     """
-    Fetch H1 and M15 bars for all pairs and populate ohlcv_cache in-place.
-    Runs yfinance downloads in thread pool so the event loop stays unblocked.
+    Fetch H1 and M15 bars for all pairs in exactly two HTTP requests
+    (one per timeframe) using Twelve Data's batch symbol feature.
+    Populates ohlcv_cache in-place.
     """
-    loop = asyncio.get_event_loop()
+    api_key = os.getenv("TWELVEDATA_API_KEY", "")
+    if not api_key:
+        logger.warning("TWELVEDATA_API_KEY not set — skipping price fetch")
+        return
 
-    for pair, yf_sym in YF_SYMBOLS.items():
-        for tf_code, (interval, period) in _TF_MAP.items():
-            try:
-                bars = await loop.run_in_executor(
-                    None, _fetch_bars_sync, yf_sym, interval, period
+    # e.g. "XAU/USD,EUR/USD,GBP/USD,GBP/JPY"
+    symbols_str = ",".join(TD_SYMBOLS.values())
+
+    for tf_code, td_interval in _TF_MAP.items():
+        params = {
+            "symbol":     symbols_str,
+            "interval":   td_interval,
+            "outputsize": 200,
+            "apikey":     api_key,
+            "format":     "JSON",
+        }
+        try:
+            async with session.get(
+                BASE_URL,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(
+                        "Twelve Data HTTP %d for %s (body: %s)",
+                        resp.status, td_interval, await resp.text(),
+                    )
+                    continue
+                data = await resp.json(content_type=None)
+        except Exception as exc:
+            logger.warning("Twelve Data request failed (%s): %s", td_interval, exc)
+            continue
+
+        # Batch response shape: { "XAU/USD": { values: [...], status: "ok" }, ... }
+        # Single-symbol fallback (shouldn't occur with 4 symbols but handle it):
+        if "values" in data:
+            first_td_sym = next(iter(TD_SYMBOLS.values()))
+            data = {first_td_sym: data}
+
+        for pair, td_sym in TD_SYMBOLS.items():
+            result = data.get(td_sym)
+            if not result:
+                logger.warning("Twelve Data: no data block for %s (%s)", td_sym, td_interval)
+                continue
+            if result.get("status") == "error":
+                logger.warning(
+                    "Twelve Data error for %s %s: %s",
+                    td_sym, td_interval, result.get("message", "unknown"),
                 )
-                if bars:
-                    key = f"{pair}_{tf_code}"
-                    ohlcv_cache[key] = {
-                        "bars":      bars,
-                        "symbol":    pair,
-                        "timeframe": tf_code,
-                        "source":    "yfinance",
-                    }
-                    # Also keep plain-symbol key for H1 (backward compat)
-                    if tf_code == "60":
-                        ohlcv_cache[pair] = ohlcv_cache[key]
-                    logger.debug("yfinance: %s %s → %d bars", pair, interval, len(bars))
-                else:
-                    logger.warning("yfinance: empty response for %s %s", pair, interval)
-            except Exception as exc:
-                logger.warning("yfinance fetch failed for %s %s: %s", pair, interval, exc)
+                continue
+            values = result.get("values", [])
+            if not values:
+                logger.warning("Twelve Data: empty values for %s %s", td_sym, td_interval)
+                continue
 
-        # Brief pause between pairs to avoid rate-limiting
-        await asyncio.sleep(1)
+            bars = _parse_bars(values)
+            if not bars:
+                continue
+
+            key = f"{pair}_{tf_code}"
+            ohlcv_cache[key] = {
+                "bars":      bars,
+                "symbol":    pair,
+                "timeframe": tf_code,
+                "source":    "twelvedata",
+            }
+            # Keep plain-symbol key for H1 (backward compat with scanner)
+            if tf_code == "60":
+                ohlcv_cache[pair] = ohlcv_cache[key]
+
+            logger.debug("Twelve Data: %s %s → %d bars", pair, td_interval, len(bars))
 
 
 async def run_price_fetcher(ohlcv_cache: dict, interval_seconds: int = 300) -> None:
     """
     Background task: fetch OHLCV data every `interval_seconds` (default 5 min).
-    Runs an initial fetch immediately on startup, then loops.
-    Writes directly into the shared ohlcv_cache dict passed in from main.py.
+    Uses a single persistent aiohttp session for connection reuse.
+    Runs an initial fetch immediately on startup, then sleeps.
     """
-    logger.info("Price fetcher starting — interval %ds, pairs: %s",
-                interval_seconds, list(YF_SYMBOLS.keys()))
-
-    while True:
-        try:
-            await fetch_all_pairs(ohlcv_cache)
-            logger.info("Price fetcher: all pairs refreshed")
-        except Exception as exc:
-            logger.error("Price fetcher loop error: %s", exc)
-
-        await asyncio.sleep(interval_seconds)
+    logger.info(
+        "Price fetcher starting (Twelve Data) — interval %ds, pairs: %s",
+        interval_seconds, list(TD_SYMBOLS.keys()),
+    )
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                await fetch_all_pairs(ohlcv_cache, session)
+                logger.info("Price fetcher: all pairs refreshed via Twelve Data")
+            except Exception as exc:
+                logger.error("Price fetcher loop error: %s", exc)
+            await asyncio.sleep(interval_seconds)

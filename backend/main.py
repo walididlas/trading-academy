@@ -447,9 +447,9 @@ async def get_feed_status():
     Summary of what's currently in the OHLCV cache (bars count + source per key).
     Useful for verifying the yfinance price fetcher is working on Railway.
     """
-    from price_fetcher import YF_SYMBOLS
+    from price_fetcher import TD_SYMBOLS
     summary = {}
-    for pair in YF_SYMBOLS:
+    for pair in TD_SYMBOLS:
         for tf in ("60", "15"):
             key  = f"{pair}_{tf}"
             data = _ohlcv_cache.get(key)
