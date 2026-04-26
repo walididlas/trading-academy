@@ -278,6 +278,43 @@ export function AlertProvider({ children }) {
     setPushModalOpen(false)
   }, [])
 
+  /**
+   * Hard-reset the push subscription:
+   *  1. Clear stored VAPID key + modal-shown flag from localStorage
+   *  2. Unregister every service worker
+   *  3. Unsubscribe from pushManager on each registration
+   *  4. Reset local pushSubscribed state so the banner reappears
+   * Caller is responsible for invoking requestPermission() afterwards
+   * from within the same user-gesture handler.
+   */
+  const resetPushSubscription = useCallback(async () => {
+    // 1. Clear localStorage flags so the subscription flow starts clean
+    localStorage.removeItem('ta_push_modal_shown')
+    localStorage.removeItem(PUSH_VAPID_KEY_STORE)
+
+    // 2+3. Unregister all SWs and unsubscribe from any push manager
+    if ('serviceWorker' in navigator) {
+      try {
+        const registrations = await navigator.serviceWorker.getRegistrations()
+        await Promise.all(registrations.map(async reg => {
+          try {
+            const sub = await reg.pushManager.getSubscription()
+            if (sub) await sub.unsubscribe()
+          } catch (_) {}
+          try { await reg.unregister() } catch (_) {}
+        }))
+      } catch (_) {}
+    }
+
+    // 4. Reset local state — banner will reappear; actual Notification.permission
+    //    is a browser value we cannot programmatically reset, but we sync our
+    //    local copy so the UI reflects the real value after the next prompt.
+    setPushSubscribed(false)
+    if (typeof Notification !== 'undefined') {
+      setPermission(Notification.permission)
+    }
+  }, [])
+
   const markRead = useCallback(() => {
     setUnreadCount(0)
   }, [])
@@ -541,7 +578,7 @@ export function AlertProvider({ children }) {
   }, [])
 
   return (
-    <AlertContext.Provider value={{ signals, news, toasts, addToast, dismiss, permission, requestPermission, pushSubscribed, wsStatus, alertHistory, unreadCount, markRead }}>
+    <AlertContext.Provider value={{ signals, news, toasts, addToast, dismiss, permission, requestPermission, resetPushSubscription, pushSubscribed, wsStatus, alertHistory, unreadCount, markRead }}>
       {children}
     </AlertContext.Provider>
   )

@@ -597,7 +597,7 @@ function MonitoringRow({ signal }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function Signals() {
-  const { signals: ctxSignals, news, wsStatus, permission, requestPermission, pushSubscribed, addToast } = useAlerts()
+  const { signals: ctxSignals, news, wsStatus, permission, requestPermission, resetPushSubscription, pushSubscribed, addToast } = useAlerts()
   const { balance, setBalance, riskPct, setRiskPct, calcLots, hasBalance } = useAccount()
   const { getNewsRiskForPair, riskByPair, nextEventByPair } = useCalendar()
   const [signals, setSignals] = useState([])
@@ -788,6 +788,28 @@ export default function Signals() {
           )}
         </div>
       )}
+
+      {/* Debug: Reset notifications — always visible so it works even when subscribed */}
+      <div style={{ marginBottom: 12, textAlign: 'right' }}>
+        <button
+          onClick={async () => {
+            await resetPushSubscription()
+            await requestPermission()
+          }}
+          style={{
+            padding:      '6px 12px',
+            background:   'transparent',
+            color:        'var(--text-4, #6b7280)',
+            border:       '1px solid var(--border, #374151)',
+            borderRadius: 6,
+            fontSize:     '0.72rem',
+            cursor:       'pointer',
+            touchAction:  'manipulation',
+          }}
+        >
+          🔄 Reset Notifications
+        </button>
+      </div>
 
       {/* Account setup modal */}
       {showAccountModal && (
