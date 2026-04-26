@@ -743,6 +743,52 @@ export default function Signals() {
 
   return (
     <div className="page fade-in">
+      {/* Push notification banner — rendered whenever subscription not confirmed.
+          No modal, no timers, no context state. Disappears only when pushSubscribed. */}
+      {!pushSubscribed && permission !== 'unsupported' && (
+        <div style={{
+          display:        'flex',
+          alignItems:     'center',
+          gap:            12,
+          background:     permission === 'denied' ? 'rgba(180,83,9,0.18)' : '#1a3a5c',
+          borderBottom:   `2px solid ${permission === 'denied' ? '#b45309' : '#2563eb'}`,
+          padding:        '14px 16px',
+          marginBottom:   16,
+          marginLeft:     -16,
+          marginRight:    -16,
+          marginTop:      -16,
+        }}>
+          <span style={{ fontSize: '1.4rem', flexShrink: 0 }}>
+            {permission === 'denied' ? '🔕' : '🔔'}
+          </span>
+          <span style={{ flex: 1, fontSize: '0.875rem', color: '#e2e8f0', lineHeight: 1.45 }}>
+            {permission === 'denied'
+              ? 'Notifications blocked — open your browser settings and allow notifications for this site.'
+              : 'Enable push notifications to get STRONG signal alerts and Kill Zone warnings on your phone.'}
+          </span>
+          {permission !== 'denied' && (
+            <button
+              onClick={requestPermission}
+              style={{
+                flexShrink:    0,
+                padding:       '10px 18px',
+                background:    '#2563eb',
+                color:         '#fff',
+                border:        'none',
+                borderRadius:  8,
+                fontSize:      '0.9rem',
+                fontWeight:    700,
+                cursor:        'pointer',
+                whiteSpace:    'nowrap',
+                touchAction:   'manipulation',
+              }}
+            >
+              Enable Now
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Account setup modal */}
       {showAccountModal && (
         <AccountSetupModal
@@ -783,31 +829,6 @@ export default function Signals() {
         </div>
       )}
 
-      {/* Notification prompt — shown whenever not yet subscribed */}
-      {!pushSubscribed && permission !== 'unsupported' && (
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 10,
-          background: permission === 'denied' ? 'rgba(180,83,9,0.12)' : 'var(--gold-pale)',
-          border: `1px solid ${permission === 'denied' ? '#b45309' : 'var(--gold-ring)'}`,
-          borderRadius: 'var(--r)', padding: '12px 14px', marginBottom: 14,
-        }}>
-          <span style={{ fontSize: '1.2rem' }}>{permission === 'denied' ? '🔕' : '🔔'}</span>
-          <span style={{ flex: 1, fontSize: '0.875rem', color: 'var(--text-2)', lineHeight: 1.4 }}>
-            {permission === 'denied'
-              ? 'Notifications are blocked. Open your browser settings and allow notifications for this site.'
-              : 'Enable push notifications to receive STRONG signal alerts, Kill Zone warnings, and news alerts on your phone.'}
-          </span>
-          {permission !== 'denied' && (
-            <button
-              className="btn btn-secondary btn-sm"
-              onClick={requestPermission}
-              style={{ flexShrink: 0, fontWeight: 700, whiteSpace: 'nowrap' }}
-            >
-              {permission === 'granted' ? 'Retry Subscription' : 'Enable Now'}
-            </button>
-          )}
-        </div>
-      )}
 
       {/* No balance warning */}
       {!hasBalance && activeSignals.length > 0 && (
