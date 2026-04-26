@@ -541,7 +541,7 @@ export function AlertProvider({ children }) {
   }, [])
 
   return (
-    <AlertContext.Provider value={{ signals, news, toasts, addToast, dismiss, permission, requestPermission, pushSubscribed, wsStatus, alertHistory, unreadCount, markRead, pushModalOpen, dismissPushModal }}>
+    <AlertContext.Provider value={{ signals, news, toasts, addToast, dismiss, permission, requestPermission, pushSubscribed, wsStatus, alertHistory, unreadCount, markRead }}>
       {children}
     </AlertContext.Provider>
   )
