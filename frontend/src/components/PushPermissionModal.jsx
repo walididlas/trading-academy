@@ -67,6 +67,8 @@ export default function PushPermissionModal() {
         }}>
           Get instant push notifications for STRONG signals, Kill Zone opens,
           and high-impact news — even when the app is closed.
+          <br /><br />
+          <strong style={{ color: 'var(--color-text, #f0f0f0)' }}>A test notification will fire immediately</strong> so you can confirm it works.
         </p>
 
         <button
@@ -85,7 +87,7 @@ export default function PushPermissionModal() {
             marginBottom: '0.75rem',
           }}
         >
-          Enable Notifications
+          Enable &amp; Send Test Notification
         </button>
 
         <button

@@ -239,15 +239,39 @@ export function AlertProvider({ children }) {
     if (typeof Notification === 'undefined') return 'unsupported'
     localStorage.setItem('ta_push_modal_shown', '1')
     setPushModalOpen(false)
+
+    // Must be called from a user-gesture context (click) — iOS Safari enforces this
     const result = await Notification.requestPermission()
     setPermission(result)
-    if (result === 'granted' && 'serviceWorker' in navigator) {
-      navigator.serviceWorker.ready
-        .then(reg => _subscribeToPush(reg).then(ok => setPushSubscribed(ok)))
-        .catch(() => {})
-    }
+
+    if (result !== 'granted' || !('serviceWorker' in navigator)) return result
+
+    try {
+      const reg = await navigator.serviceWorker.ready
+      const ok  = await _subscribeToPush(reg)
+      setPushSubscribed(ok)
+
+      if (ok) {
+        // Confirm subscription worked — fires a real push so user sees it immediately
+        try {
+          await fetch(`${API_BASE}/api/push/test`, { method: 'POST' })
+        } catch (_) {}
+        addToast({
+          type:  'signal',
+          title: '🔔 Notifications enabled',
+          body:  'You will receive a test push now to confirm everything works.',
+        })
+      } else {
+        addToast({
+          type:  'warning',
+          title: '⚠ Subscription failed',
+          body:  'Permission granted but push registration failed. Try reloading.',
+        })
+      }
+    } catch (_) {}
+
     return result
-  }, [])
+  }, [addToast])
 
   const dismissPushModal = useCallback(() => {
     localStorage.setItem('ta_push_modal_shown', '1')

@@ -801,9 +801,9 @@ export default function Signals() {
             <button
               className="btn btn-secondary btn-sm"
               onClick={requestPermission}
-              style={{ flexShrink: 0, fontWeight: 700 }}
+              style={{ flexShrink: 0, fontWeight: 700, whiteSpace: 'nowrap' }}
             >
-              Enable Now
+              {permission === 'granted' ? 'Retry Subscription' : 'Enable Now'}
             </button>
           )}
         </div>
