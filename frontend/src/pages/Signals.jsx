@@ -597,7 +597,7 @@ function MonitoringRow({ signal }) {
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function Signals() {
-  const { signals: ctxSignals, news, wsStatus, permission, requestPermission, addToast } = useAlerts()
+  const { signals: ctxSignals, news, wsStatus, permission, requestPermission, pushSubscribed, addToast } = useAlerts()
   const { balance, setBalance, riskPct, setRiskPct, calcLots, hasBalance } = useAccount()
   const { getNewsRiskForPair, riskByPair, nextEventByPair } = useCalendar()
   const [signals, setSignals] = useState([])
@@ -783,18 +783,29 @@ export default function Signals() {
         </div>
       )}
 
-      {/* Notification prompt */}
-      {permission === 'default' && (
+      {/* Notification prompt — shown whenever not yet subscribed */}
+      {!pushSubscribed && permission !== 'unsupported' && (
         <div style={{
-          background: 'var(--gold-pale)', border: '1px solid var(--gold-ring)',
-          borderRadius: 'var(--r)', padding: '10px 14px', marginBottom: 14,
-          display: 'flex', alignItems: 'center', gap: 10
+          display: 'flex', alignItems: 'center', gap: 10,
+          background: permission === 'denied' ? 'rgba(180,83,9,0.12)' : 'var(--gold-pale)',
+          border: `1px solid ${permission === 'denied' ? '#b45309' : 'var(--gold-ring)'}`,
+          borderRadius: 'var(--r)', padding: '12px 14px', marginBottom: 14,
         }}>
-          <span>🔔</span>
-          <span style={{ flex: 1, fontSize: '0.85rem', color: 'var(--text-2)' }}>
-            Enable notifications for STRONG signal alerts (score ≥80)
+          <span style={{ fontSize: '1.2rem' }}>{permission === 'denied' ? '🔕' : '🔔'}</span>
+          <span style={{ flex: 1, fontSize: '0.875rem', color: 'var(--text-2)', lineHeight: 1.4 }}>
+            {permission === 'denied'
+              ? 'Notifications are blocked. Open your browser settings and allow notifications for this site.'
+              : 'Enable push notifications to receive STRONG signal alerts, Kill Zone warnings, and news alerts on your phone.'}
           </span>
-          <button className="btn btn-secondary btn-sm" onClick={requestPermission}>Enable</button>
+          {permission !== 'denied' && (
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={requestPermission}
+              style={{ flexShrink: 0, fontWeight: 700 }}
+            >
+              Enable Now
+            </button>
+          )}
         </div>
       )}
 

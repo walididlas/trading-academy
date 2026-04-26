@@ -5,6 +5,7 @@ import MobileHeader from './MobileHeader'
 import BottomNav from './BottomNav'
 import AlertToast from '../AlertToast'
 import PushBanner from '../PushBanner'
+import PushPermissionModal from '../PushPermissionModal'
 import { AlertProvider } from '../../contexts/AlertContext'
 
 export default function Layout({ children }) {
@@ -71,6 +72,9 @@ export default function Layout({ children }) {
         {/* Mobile-only bottom nav */}
         <BottomNav />
       </div>
+
+      {/* Auto-appears on first load when permission not yet granted */}
+      <PushPermissionModal />
     </AlertProvider>
   )
 }

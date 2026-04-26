@@ -17,8 +17,6 @@ export default function PushBanner() {
   // Nothing to show: already subscribed, or browser doesn't support it
   if (pushSubscribed) return null
   if (permission === 'unsupported') return null
-  // 'granted' + not yet subscribed = subscription is loading in background; don't flash banner
-  if (permission === 'granted' && !pushSubscribed) return null
 
   const denied = permission === 'denied'
 

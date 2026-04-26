@@ -186,6 +186,12 @@ export function AlertProvider({ children }) {
   )
   const [pushSubscribed, setPushSubscribed] = useState(false)
   const [wsStatus, setWsStatus] = useState('connecting')
+  // Show our in-app permission modal automatically on first visit (when not yet asked)
+  const [pushModalOpen, setPushModalOpen] = useState(() => {
+    if (typeof Notification === 'undefined') return false
+    if (Notification.permission !== 'default') return false
+    return localStorage.getItem('ta_push_modal_shown') !== '1'
+  })
   const idRef = useRef(0)
   const timersRef = useRef({})
   const signalsRef = useRef([])  // always-current ref for WS callback
@@ -231,15 +237,21 @@ export function AlertProvider({ children }) {
 
   const requestPermission = useCallback(async () => {
     if (typeof Notification === 'undefined') return 'unsupported'
+    localStorage.setItem('ta_push_modal_shown', '1')
+    setPushModalOpen(false)
     const result = await Notification.requestPermission()
     setPermission(result)
-    // If granted, subscribe to Web Push (handles VAPID key rotation internally)
     if (result === 'granted' && 'serviceWorker' in navigator) {
       navigator.serviceWorker.ready
         .then(reg => _subscribeToPush(reg).then(ok => setPushSubscribed(ok)))
         .catch(() => {})
     }
     return result
+  }, [])
+
+  const dismissPushModal = useCallback(() => {
+    localStorage.setItem('ta_push_modal_shown', '1')
+    setPushModalOpen(false)
   }, [])
 
   const markRead = useCallback(() => {
@@ -505,7 +517,7 @@ export function AlertProvider({ children }) {
   }, [])
 
   return (
-    <AlertContext.Provider value={{ signals, news, toasts, addToast, dismiss, permission, requestPermission, pushSubscribed, wsStatus, alertHistory, unreadCount, markRead }}>
+    <AlertContext.Provider value={{ signals, news, toasts, addToast, dismiss, permission, requestPermission, pushSubscribed, wsStatus, alertHistory, unreadCount, markRead, pushModalOpen, dismissPushModal }}>
       {children}
     </AlertContext.Provider>
   )
