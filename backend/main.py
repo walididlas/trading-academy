@@ -382,6 +382,25 @@ async def push_status():
     }
 
 
+@app.post("/api/push/test")
+async def push_test():
+    """Send a test push notification to all registered subscribers."""
+    from push_notifier import send_push, get_subscription_count
+    n = get_subscription_count()
+    if n == 0:
+        return {"ok": False, "error": "No subscribers registered"}
+    if not os.getenv("VAPID_PRIVATE_KEY"):
+        return {"ok": False, "error": "VAPID_PRIVATE_KEY not configured"}
+    await send_push(
+        title="🔔 Trading Academy — Test Notification",
+        body="Push notifications are working correctly. VAPID is configured.",
+        tag="ta-test",
+        type_="killzone",
+        url="/signals",
+    )
+    return {"ok": True, "sent_to": n}
+
+
 # ── WebSocket ──────────────────────────────────────────────────────────────────
 
 @app.websocket("/ws/signals")
