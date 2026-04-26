@@ -13,14 +13,14 @@ export default function PushPermissionModal() {
 
   return (
     <>
-      {/* Backdrop */}
+      {/* Backdrop — visual only, not dismissible on click */}
       <div
-        onClick={dismissPushModal}
         style={{
-          position:   'fixed',
-          inset:      0,
-          background: 'rgba(0,0,0,0.5)',
-          zIndex:     9000,
+          position:       'fixed',
+          inset:          0,
+          background:     'rgba(0,0,0,0.5)',
+          zIndex:         9000,
+          pointerEvents:  'none',
         }}
         aria-hidden="true"
       />
