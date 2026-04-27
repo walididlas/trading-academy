@@ -198,45 +198,59 @@ async def fetch_all_pairs(ohlcv_cache: dict, session: aiohttp.ClientSession) -> 
 
 async def warm_cache_now(ohlcv_cache: dict) -> None:
     """
-    One-shot parallel H1 fetch for all pairs — no rate-limit delays.
-    Call once at startup (with await) so the cache is warm before the scanner's
-    first run and before any /api/candles requests arrive.
-    All 4 pairs are fetched concurrently (~5 s total vs 40 s serialised).
+    Startup-only H1 fetch — sequential with short delays to respect the
+    free-tier rate limit (8 req/min).  Never skips on weekends because
+    Twelve Data always returns the latest available historical bars.
+
+    Uses print(flush=True) so every step is visible in Railway logs
+    regardless of the logging level configured by uvicorn.
     """
     api_key = os.getenv("TWELVEDATA_API_KEY", "")
     if not api_key:
-        logger.warning("TWELVEDATA_API_KEY not set — skipping startup warmup")
-        return
-    if _is_weekend():
-        logger.info("Startup warmup skipped — weekend, forex markets closed")
+        print("[warmup] TWELVEDATA_API_KEY not set — charts will be empty until key is added", flush=True)
+        logger.warning("warm_cache_now: TWELVEDATA_API_KEY not set — skipping")
         return
 
-    logger.info(
-        "Cache warmup: fetching H1 for %s (parallel)", list(TD_SYMBOLS.keys())
-    )
+    pairs = list(TD_SYMBOLS.items())
+    print(f"[warmup] Starting H1 fetch for {[p for p, _ in pairs]} …", flush=True)
+    logger.info("Cache warmup: fetching H1 for %s (sequential)", [p for p, _ in pairs])
+
+    ok_count = 0
+    failed: list[str] = []
 
     async with aiohttp.ClientSession() as session:
-        pairs   = list(TD_SYMBOLS.items())           # [(pair, td_symbol), ...]
-        tasks   = [
-            _fetch_one(session, api_key, td_sym, "1h")
-            for _, td_sym in pairs
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for i, (pair, td_symbol) in enumerate(pairs):
+            if i > 0:
+                # 8-second gap keeps cumulative rate well under 8 req/min
+                await asyncio.sleep(8)
 
-        for (pair, _), result in zip(pairs, results):
-            if isinstance(result, Exception) or not result:
-                logger.warning("Warmup failed for %s: %s", pair, result)
+            print(f"[warmup] {pair} ({td_symbol}) H1 … ", end="", flush=True)
+            bars = await _fetch_one(session, api_key, td_symbol, "1h")
+
+            if not bars:
+                failed.append(pair)
+                print("FAILED (0 bars returned)", flush=True)
+                logger.warning("warm_cache_now: %s → 0 bars (API error or quota exceeded)", pair)
                 continue
+
             key = f"{pair}_60"
             ohlcv_cache[key] = {
-                "bars":      result,
+                "bars":      bars,
                 "symbol":    pair,
                 "timeframe": "60",
-                "source":    "twelvedata",
-                "kz":        False,
+                "source":    "twelvedata_startup",
             }
             ohlcv_cache[pair] = ohlcv_cache[key]
-            logger.info("Warmup: %s → %d bars cached", pair, len(result))
+            ok_count += 1
+            print(f"OK — {len(bars)} bars cached", flush=True)
+            logger.info("warm_cache_now: %s → %d bars", pair, len(bars))
+
+    if failed:
+        print(f"[warmup] DONE {ok_count}/{len(pairs)} pairs OK  |  FAILED: {failed}", flush=True)
+        logger.warning("warm_cache_now complete: %d/%d OK — failed pairs: %s", ok_count, len(pairs), failed)
+    else:
+        print(f"[warmup] DONE {ok_count}/{len(pairs)} pairs OK — all charts ready", flush=True)
+        logger.info("warm_cache_now complete: all %d pairs cached", ok_count)
 
 
 async def run_price_fetcher(ohlcv_cache: dict, interval_seconds: int = 300) -> None:
@@ -244,11 +258,19 @@ async def run_price_fetcher(ohlcv_cache: dict, interval_seconds: int = 300) -> N
     Background task: fetch OHLCV data every `interval_seconds` (default 5 min).
     Skips entirely on weekends — forex markets are closed.
     Uses a persistent aiohttp session for connection reuse.
+
+    Sleeps for one full interval before the first fetch so it does not
+    race with or overwrite the data loaded by warm_cache_now at startup.
     """
     logger.info(
-        "Price fetcher starting (Twelve Data) — interval %ds, pairs: %s",
+        "Price fetcher starting (Twelve Data) — first refresh in %ds, pairs: %s",
         interval_seconds, list(TD_SYMBOLS.keys()),
     )
+    print(f"[price_fetcher] Started — first periodic refresh in {interval_seconds}s", flush=True)
+
+    # Wait before the first cycle so startup warmup data stays intact
+    await asyncio.sleep(interval_seconds)
+
     async with aiohttp.ClientSession() as session:
         while True:
             if _is_weekend():

@@ -323,15 +323,17 @@ async def lifespan(app: FastAPI):
     # Connect to Supabase PostgreSQL (no-op if DATABASE_URL is not set)
     _init_db()
 
-    # Parallel warmup: fetch all H1 pairs concurrently before the scanner's first
-    # run. This takes ~5 s (4 concurrent requests) instead of 40 s serialised.
-    # The periodic price_task below then keeps the cache fresh every 5 min.
+    # Sequential startup warmup: fetches H1 for all 4 pairs before the scanner's
+    # first run.  Uses print(flush=True) so every step is visible in Railway logs.
     import logging as _log
+    print("[startup] Fetching OHLCV data — scanner will start after warmup", flush=True)
     _log.getLogger(__name__).info("Startup: warming price cache…")
     try:
         await warm_cache_now(_ohlcv_cache)
     except Exception as _exc:
+        print(f"[startup] warmup raised an exception: {_exc}", flush=True)
         _log.getLogger(__name__).warning("Startup warmup error: %s", _exc)
+    print("[startup] Warmup complete — launching background tasks", flush=True)
 
     price_task     = asyncio.create_task(run_price_fetcher(_ohlcv_cache))
     scanner_task   = asyncio.create_task(run_scanner(manager.broadcast, _get_ohlcv))
