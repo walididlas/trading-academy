@@ -193,11 +193,11 @@ export default function DrawdownPanel() {
   }
 
   if (!data?.ok) {
-    // MetaApi not configured — show journal-based stats only
+    // Live account data not available — show journal-based stats only
     return <JournalFallback />
   }
 
-  // ── Live MetaApi data ───────────────────────────────────────────────────────
+  // ── Live account data ─────────────────────────────────────────────────────────
   const {
     equity, balance, start_equity,
     today_pnl, loss_pct,
@@ -291,7 +291,7 @@ export default function DrawdownPanel() {
   )
 }
 
-// ── Fallback: journal-based stats (no MetaApi) ────────────────────────────────
+// ── Fallback: journal-based stats ────────────────────────────────────────────
 function JournalFallback() {
   const today = new Date().toISOString().split('T')[0]
 
@@ -324,7 +324,7 @@ function JournalFallback() {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
         <div>
           <div className="label-caps">Today's Performance</div>
-          <div style={{ fontSize: '0.7rem', color: 'var(--text-4)', marginTop: 2 }}>From journal · connect MetaApi for live equity</div>
+          <div style={{ fontSize: '0.7rem', color: 'var(--text-4)', marginTop: 2 }}>From journal entries</div>
         </div>
       </div>
 

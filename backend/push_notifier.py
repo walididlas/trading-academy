@@ -9,10 +9,9 @@ Required environment variables:
   VAPID_PRIVATE_KEY  — base64url-encoded 32-byte EC P-256 private key
 
 URL routes embedded in push payloads so tapping the notification opens the right page:
-  signal / auto_executed / position_closed  → /signals
+  signal / outcome_check                    → /signals
   killzone / kz_warning                     → /signals
   news_warning                              → /signals
-  auto_trade_paused                         → /signals
   weekly_report                             → /
 """
 import asyncio

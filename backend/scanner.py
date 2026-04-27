@@ -786,7 +786,7 @@ async def run_scanner(broadcast: Callable, get_ohlcv_fn: Callable) -> None:
                 elif pair in _strong_state:
                     del _strong_state[pair]
 
-                # ── STRONG transition → push alert (manual execution on MT5) ────
+                # ── STRONG transition → push alert ───────────────────────────────
                 if sig.get("grade") == "STRONG" and prev_grade != "STRONG":
                     strong_alerts.append(sig)
                     try:

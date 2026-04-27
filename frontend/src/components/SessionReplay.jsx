@@ -275,7 +275,7 @@ export default function SessionReplay() {
         <div className="empty-state-icon">🎬</div>
         <div className="empty-state-title">No session replays yet</div>
         <div className="empty-state-text">
-          Replays are generated automatically each time a MetaApi position closes (SL or TP hit). They store the signal score, confluence criteria, and post-trade analysis.
+          Replays are generated automatically when you confirm a trade outcome (Took It / Missed / Skipped). They store the signal score, confluence criteria, and post-trade analysis.
         </div>
       </div>
     )

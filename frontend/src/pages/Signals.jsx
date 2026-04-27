@@ -1009,7 +1009,7 @@ export default function Signals() {
               Weekend — Markets Closed
             </div>
             <div style={{ fontSize: '0.8rem', color: 'var(--text-3)', marginTop: 2 }}>
-              Opens Monday 10:00 Morocco · London Kill Zone · Auto-execution disabled
+              Opens Monday 10:00 Morocco · London Kill Zone
             </div>
           </div>
           <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
