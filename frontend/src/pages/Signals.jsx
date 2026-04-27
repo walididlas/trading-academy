@@ -685,20 +685,16 @@ function _buildJournalEntry(pair, outcome, reason, sig) {
   }
 }
 
-function _writeOutcomeEntry(pair, outcome, reason) {
+async function _writeOutcomeEntry(pair, outcome, reason) {
   try {
     const stored = JSON.parse(localStorage.getItem(`ta_outcome_pending_${pair}`) || 'null')
     const sig    = stored?.signal ?? {}
     const entry  = _buildJournalEntry(pair, outcome, reason, sig)
-    const existing = JSON.parse(localStorage.getItem('trading_journal') || '[]')
-    const cutoff   = Date.now() - 2 * 60 * 60 * 1000
-    const isDup    = existing.some(t =>
-      t.type === 'outcome_check' && t.pair === pair &&
-      parseInt(t.id?.replace('outcome_', '') ?? '0', 10) > cutoff
-    )
-    if (!isDup) {
-      localStorage.setItem('trading_journal', JSON.stringify([entry, ...existing]))
-    }
+    await fetch(`${API_BASE}/api/journal`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(entry),
+    })
   } catch (_) {}
 }
 

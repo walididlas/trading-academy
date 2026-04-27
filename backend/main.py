@@ -9,15 +9,35 @@ Endpoints:
 import asyncio
 import json
 import os
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 load_dotenv()
+
+# ── Journal persistence (JSON file) ───────────────────────────────────────────
+
+_JOURNAL_PATH = os.path.join(os.path.dirname(__file__), "data", "journal.json")
+_journal_lock = threading.Lock()
+
+
+def _load_journal() -> list:
+    try:
+        with open(_JOURNAL_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def _save_journal(trades: list) -> None:
+    os.makedirs(os.path.dirname(_JOURNAL_PATH), exist_ok=True)
+    with open(_JOURNAL_PATH, "w") as f:
+        json.dump(trades, f, indent=2)
 
 # ── WebSocket connection manager ───────────────────────────────────────────────
 
@@ -537,6 +557,64 @@ async def push_test():
         url="/signals",
     )
     return {"ok": True, "sent_to": n}
+
+
+# ── Journal endpoints ─────────────────────────────────────────────────────────
+
+@app.get("/api/journal")
+async def get_journal():
+    with _journal_lock:
+        trades = _load_journal()
+    return {"trades": trades}
+
+
+@app.post("/api/journal", status_code=201)
+async def add_trade(request: Request):
+    trade = await request.json()
+    if not isinstance(trade, dict) or not trade.get("id"):
+        raise HTTPException(status_code=422, detail="Trade must be a JSON object with an 'id' field")
+    with _journal_lock:
+        trades = _load_journal()
+        # Dedup: skip if same id already stored
+        if any(t.get("id") == trade["id"] for t in trades):
+            return trade
+        # Outcome dedup: one outcome_check per pair per 2 hours
+        if trade.get("type") == "outcome_check":
+            cutoff = datetime.now(timezone.utc).timestamp() * 1000 - 2 * 60 * 60 * 1000
+            if any(
+                t.get("type") == "outcome_check"
+                and t.get("pair") == trade.get("pair")
+                and int(t.get("id", "outcome_0").replace("outcome_", "") or 0) > cutoff
+                for t in trades
+            ):
+                return trade
+        trades.insert(0, trade)
+        _save_journal(trades)
+    return trade
+
+
+@app.patch("/api/journal/{trade_id}")
+async def update_trade(trade_id: str, request: Request):
+    updates = await request.json()
+    with _journal_lock:
+        trades = _load_journal()
+        for i, t in enumerate(trades):
+            if t.get("id") == trade_id:
+                trades[i] = {**t, **updates}
+                _save_journal(trades)
+                return trades[i]
+    raise HTTPException(status_code=404, detail="Trade not found")
+
+
+@app.delete("/api/journal/{trade_id}")
+async def delete_trade(trade_id: str):
+    with _journal_lock:
+        trades = _load_journal()
+        updated = [t for t in trades if t.get("id") != trade_id]
+        if len(updated) == len(trades):
+            raise HTTPException(status_code=404, detail="Trade not found")
+        _save_journal(updated)
+    return {"ok": True}
 
 
 # ── WebSocket ──────────────────────────────────────────────────────────────────

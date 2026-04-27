@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import SessionReplay from '../components/SessionReplay'
-
-const STORAGE_KEY = 'trading_journal'
+import { API_BASE } from '../config'
 
 // ── Pip / P&L helpers ─────────────────────────────────────────────────────────
 const PIP_SIZE  = { XAUUSD: 0.1, GBPJPY: 0.01, USDJPY: 0.01, NZDJPY: 0.01 }
@@ -43,12 +42,25 @@ function iccGrade(kz, trendAligned, iccValid, rr) {
 
 const GRADE_COLOR = { A: 'var(--green)', B: '#60a5fa', C: 'var(--gold)', F: 'var(--red)' }
 
-// ── Persistence ───────────────────────────────────────────────────────────────
-function loadTrades() {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]') } catch { return [] }
+// ── API helpers ───────────────────────────────────────────────────────────────
+async function apiPost(trade) {
+  const res = await fetch(`${API_BASE}/api/journal`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(trade),
+  })
+  if (!res.ok) throw new Error(`POST /api/journal ${res.status}`)
+  return res.json()
 }
-function saveTrades(trades) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(trades))
+
+async function apiPatch(id, updates) {
+  const res = await fetch(`${API_BASE}/api/journal/${encodeURIComponent(id)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updates),
+  })
+  if (!res.ok) throw new Error(`PATCH /api/journal ${res.status}`)
+  return res.json()
+}
+
+async function apiDelete(id) {
+  await fetch(`${API_BASE}/api/journal/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 
 // ── Outcome stats ─────────────────────────────────────────────────────────────
@@ -783,24 +795,55 @@ function OutcomeSummary({ stats }) {
 
 // ── Main Journal page ─────────────────────────────────────────────────────────
 export default function Journal() {
-  const [activeTab, setActiveTab] = useState('journal')  // 'journal' | 'replay'
-  const [trades, setTrades]       = useState(loadTrades)
+  const [activeTab, setActiveTab] = useState('journal')
+  const [trades, setTrades]       = useState([])
+  const [loading, setLoading]     = useState(true)
   const [showForm, setShowForm]   = useState(false)
   const [editId, setEditId]       = useState(null)
   const [filterPair, setFilterPair]     = useState('ALL')
   const [filterResult, setFilterResult] = useState('ALL')
 
-  useEffect(() => saveTrades(trades), [trades])
+  // Load from API on mount; one-time migrate from localStorage if API is empty
+  useEffect(() => {
+    async function load() {
+      try {
+        const res  = await fetch(`${API_BASE}/api/journal`)
+        const data = await res.json()
+        let loaded = data.trades ?? []
+
+        if (loaded.length === 0) {
+          const local = (() => {
+            try { return JSON.parse(localStorage.getItem('trading_journal') || '[]') } catch { return [] }
+          })()
+          if (local.length > 0) {
+            // Migrate existing localStorage trades to the backend one by one
+            for (const t of local) {
+              try { await apiPost(t) } catch (_) {}
+            }
+            localStorage.removeItem('trading_journal')
+            const res2 = await fetch(`${API_BASE}/api/journal`)
+            loaded = (await res2.json()).trades ?? []
+          }
+        }
+
+        setTrades(loaded)
+      } catch (_) {
+        // API unreachable — fall back to localStorage so the page still works
+        try { setTrades(JSON.parse(localStorage.getItem('trading_journal') || '[]')) } catch {}
+      } finally {
+        setLoading(false)
+      }
+    }
+    load()
+  }, [])
 
   const stats        = useMemo(() => calcStats(trades), [trades])
   const outcomeStats = useMemo(() => calcOutcomeStats(trades), [trades])
 
-  // Open trades = taken but result not yet recorded (real positions only)
   const openTrades = useMemo(() =>
     trades.filter(t => (!t.result || t.result === '') && t.outcome !== 'missed' && t.outcome !== 'skipped'),
   [trades])
 
-  // Closed trades = win/loss only (excludes missed/skipped outcomes)
   const closedTrades = useMemo(() =>
     trades.filter(t => t.result === 'win' || t.result === 'loss' || t.result === 'breakeven'),
   [trades])
@@ -812,15 +855,25 @@ export default function Journal() {
     return ts.sort((a, b) => b.date.localeCompare(a.date))
   }, [closedTrades, filterPair, filterResult])
 
-  const weekGroups = useMemo(() => groupByWeek(filteredClosed), [filteredClosed])
+  const weekGroups     = useMemo(() => groupByWeek(filteredClosed), [filteredClosed])
   const availablePairs = useMemo(() => ['ALL', ...new Set(trades.map(t => t.pair).filter(Boolean))], [trades])
 
-  const handleSave = useCallback((form) => {
+  const handleSave = useCallback(async (form) => {
     if (editId) {
-      setTrades(ts => ts.map(t => t.id === editId ? { ...form, id: editId } : t))
+      try {
+        const updated = await apiPatch(editId, form)
+        setTrades(ts => ts.map(t => t.id === editId ? updated : t))
+      } catch (_) {
+        setTrades(ts => ts.map(t => t.id === editId ? { ...form, id: editId } : t))
+      }
       setEditId(null)
     } else {
-      setTrades(ts => [{ ...form, id: Date.now().toString() }, ...ts])
+      const trade = { ...form, id: Date.now().toString() }
+      setTrades(ts => [trade, ...ts])          // optimistic
+      try {
+        const saved = await apiPost(trade)
+        setTrades(ts => ts.map(t => t.id === trade.id ? saved : t))
+      } catch (_) {}
     }
     setShowForm(false)
   }, [editId])
@@ -831,29 +884,31 @@ export default function Journal() {
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }, [])
 
-  const handleDelete = useCallback((id) => {
-    if (confirm('Delete this trade?')) setTrades(ts => ts.filter(t => t.id !== id))
+  const handleDelete = useCallback(async (id) => {
+    if (!confirm('Delete this trade?')) return
+    setTrades(ts => ts.filter(t => t.id !== id))   // optimistic
+    try { await apiDelete(id) } catch (_) {}
   }, [])
 
-  const handleClose = useCallback((id, type, customPrice) => {
-    setTrades(ts => ts.map(t => {
-      if (t.id !== id) return t
-      const exitPrice = type === 'tp' ? t.tp : type === 'sl' ? t.sl : customPrice
-      const ps  = ({ XAUUSD: 0.1, GBPJPY: 0.01, USDJPY: 0.01, NZDJPY: 0.01 })[t.pair] ?? 0.0001
-      const raw = (parseFloat(exitPrice) - parseFloat(t.entry)) / ps
-      const pips = t.direction === 'long' ? raw : -raw
-      const pnl  = calcPnl(pips, t.lotSize, t.pair)
-      const result = pips > 0 ? 'win' : pips < 0 ? 'loss' : 'breakeven'
-      return {
-        ...t,
-        exitPrice: exitPrice?.toString() ?? t.exitPrice,
-        pips:      pips != null && !isNaN(pips) ? pips.toFixed(1) : t.pips,
-        pnl:       pnl  != null && !isNaN(pnl)  ? pnl.toFixed(2)  : t.pnl,
-        result,
-        closedAt:  new Date().toISOString(),
-      }
-    }))
-  }, [])
+  const handleClose = useCallback(async (id, type, customPrice) => {
+    const trade = trades.find(t => t.id === id)
+    if (!trade) return
+    const exitPrice = type === 'tp' ? trade.tp : type === 'sl' ? trade.sl : customPrice
+    const ps        = ({ XAUUSD: 0.1, GBPJPY: 0.01, USDJPY: 0.01, NZDJPY: 0.01 })[trade.pair] ?? 0.0001
+    const raw       = (parseFloat(exitPrice) - parseFloat(trade.entry)) / ps
+    const pips      = trade.direction === 'long' ? raw : -raw
+    const pnl       = calcPnl(pips, trade.lotSize, trade.pair)
+    const result    = pips > 0 ? 'win' : pips < 0 ? 'loss' : 'breakeven'
+    const updates   = {
+      exitPrice: exitPrice?.toString() ?? '',
+      pips:      !isNaN(pips) ? pips.toFixed(1) : '',
+      pnl:       pnl != null && !isNaN(pnl) ? pnl.toFixed(2) : '',
+      result,
+      closedAt:  new Date().toISOString(),
+    }
+    setTrades(ts => ts.map(t => t.id === id ? { ...t, ...updates } : t))  // optimistic
+    try { await apiPatch(id, updates) } catch (_) {}
+  }, [trades])
 
   const editingTrade = editId ? trades.find(t => t.id === editId) : null
 
@@ -903,6 +958,15 @@ export default function Journal() {
 
       {/* Journal tab — hidden when replay is active */}
       {activeTab !== 'replay' && <>
+
+      {/* Loading state */}
+      {loading && (
+        <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--text-3)', fontSize: '0.9rem' }}>
+          Loading journal…
+        </div>
+      )}
+
+      {!loading && <>
 
       {/* Form */}
       {showForm && (
@@ -1045,6 +1109,8 @@ export default function Journal() {
           )}
         </>
       )}
+
+      </> /* end !loading */}
 
       </> /* end journal tab */}
     </div>
