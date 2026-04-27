@@ -241,6 +241,24 @@ async def get_signals():
     return {"signals": get_cached_signals()}
 
 
+@app.get("/api/ohlcv/{symbol}")
+async def get_ohlcv_bars(symbol: str, timeframe: str = "60", limit: int = 120):
+    """Return actual OHLCV bars for charting (read from the live price-fetcher cache)."""
+    key  = f"{symbol.upper()}_{timeframe}"
+    data = _ohlcv_cache.get(key) or _ohlcv_cache.get(symbol.upper())
+    if not data or not data.get("bars"):
+        return {"symbol": symbol, "timeframe": timeframe, "bars": [], "cached": False}
+    bars = data["bars"][-limit:]
+    return {
+        "symbol":    symbol.upper(),
+        "timeframe": timeframe,
+        "bars":      bars,
+        "cached":    True,
+        "source":    data.get("source", "unknown"),
+        "count":     len(bars),
+    }
+
+
 @app.post("/api/rescan/{pair}")
 async def rescan_pair_endpoint(pair: str):
     """

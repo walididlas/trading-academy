@@ -9,6 +9,7 @@ import SetupDiagram from '../components/SetupDiagram'
 import NewsFeed from '../components/NewsFeed'
 import NewsShield from '../components/NewsShield'
 import CalendarStrip from '../components/CalendarStrip'
+import PairChart from '../components/PairChart'
 
 const PAIRS = ['XAUUSD', 'EURUSD', 'GBPUSD', 'GBPJPY']
 
@@ -773,6 +774,7 @@ export default function Signals() {
   const [loading, setLoading] = useState(true)
   const [lastRefresh, setLastRefresh] = useState(null)
   const [showAccountModal, setShowAccountModal] = useState(false)
+  const [showCharts, setShowCharts] = useState(true)
   const priceAlerts = useRef({})  // { pair: entry }
 
   // Seed from REST, then WS takes over
@@ -1100,6 +1102,86 @@ export default function Signals() {
           )}
         </>
       )}
+
+      {/* ── Live Charts ──────────────────────────────────────────────────── */}
+      <div style={{ marginTop: 24, marginBottom: 8 }}>
+        <div style={{
+          display: 'flex', justifyContent: 'space-between',
+          alignItems: 'center', marginBottom: 12,
+        }}>
+          <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-4)',
+                        textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+            Live Charts — H1 Candles
+          </div>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => setShowCharts(v => !v)}
+            style={{ fontSize: '0.72rem' }}
+          >
+            {showCharts ? 'Hide' : 'Show'} Charts
+          </button>
+        </div>
+
+        {showCharts && (
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+            gap: 14,
+          }}>
+            {PAIRS.map(pair => {
+              const sig = signals.find(s =>
+                s.pair === pair && (s.grade === 'STRONG' || s.grade === 'WATCH')
+              ) ?? null
+              return (
+                <div key={pair} className="card" style={{ padding: '10px 12px' }}>
+                  {/* Chart header */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between',
+                                alignItems: 'center', marginBottom: 8 }}>
+                    <span style={{ fontWeight: 700, fontSize: '0.875rem',
+                                   fontFamily: "'JetBrains Mono', monospace" }}>
+                      {pair}
+                    </span>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      {sig && (
+                        <span style={{
+                          fontSize: '0.62rem', fontWeight: 700,
+                          padding: '2px 7px', borderRadius: 4,
+                          background: sig.grade === 'STRONG'
+                            ? 'rgba(245,158,11,0.15)' : 'rgba(59,130,246,0.12)',
+                          color: sig.grade === 'STRONG' ? 'var(--gold, #f59e0b)' : '#60a5fa',
+                        }}>
+                          {sig.grade} · {sig.score}pts
+                        </span>
+                      )}
+                      {sig?.direction && (
+                        <span style={{
+                          fontSize: '0.62rem', fontWeight: 700,
+                          color: sig.direction === 'long' ? 'var(--green)' : 'var(--red)',
+                        }}>
+                          {sig.direction === 'long' ? '▲ LONG' : '▼ SHORT'}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Signal level legend */}
+                  {sig?.entry && (
+                    <div style={{ display: 'flex', gap: 12, marginBottom: 8,
+                                  fontSize: '0.68rem', fontFamily: "'JetBrains Mono', monospace" }}>
+                      <span style={{ color: '#f59e0b' }}>● Entry {sig.entry}</span>
+                      {sig.sl  && <span style={{ color: '#ef4444' }}>● SL {sig.sl}</span>}
+                      {sig.tp1 && <span style={{ color: '#22c55e' }}>● TP1 {sig.tp1}</span>}
+                      {sig.tp2 && <span style={{ color: '#16a34a' }}>● TP2 {sig.tp2}</span>}
+                    </div>
+                  )}
+
+                  <PairChart pair={pair} signal={sig} />
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
 
       {/* News feed */}
       <NewsFeed news={news} inKillZone={inKZ} />
