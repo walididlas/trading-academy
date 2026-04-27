@@ -775,7 +775,99 @@ export default function Signals() {
   const [lastRefresh, setLastRefresh] = useState(null)
   const [showAccountModal, setShowAccountModal] = useState(false)
   const [expandedCharts, setExpandedCharts] = useState(() => new Set(PAIRS))
+  const [journalOverlays, setJournalOverlays] = useState({})  // { pair: signal-like }
   const priceAlerts = useRef({})  // { pair: entry }
+
+  // ── Seed manual trade entry + load journal chart overlays ─────────────────
+  useEffect(() => {
+    const SEED_KEY  = 'ta_seeded_xauusd_sell_330035'
+    const today     = new Date().toISOString().split('T')[0]
+
+    // One-time seed: add the XAUUSD SELL 3300.35 entry if not already present
+    if (!localStorage.getItem(SEED_KEY)) {
+      try {
+        const existing = JSON.parse(localStorage.getItem('trading_journal') || '[]')
+        const seedEntry = {
+          id:           `manual_${Date.now()}`,
+          date:         today,
+          pair:         'XAUUSD',
+          direction:    'short',
+          session:      'London',
+          entry:        '3300.35',
+          sl:           '3313.66',
+          tp:           '3274.53',
+          exitPrice:    '',
+          lotSize:      '0.10',
+          result:       '',
+          pips:         '',
+          pnl:          '',
+          rr:           '',
+          reasoning:    'XAUUSD SELL — Entry 3300.35 · TP 3274.53 · SL 3313.66',
+          kz:           true,
+          trendAligned: true,
+          iccValid:     true,
+          grade:        'A',
+        }
+        localStorage.setItem('trading_journal', JSON.stringify([seedEntry, ...existing]))
+        localStorage.setItem(SEED_KEY, '1')
+      } catch (_) {}
+    }
+
+    // Load journal overlays: open trades today (no exit yet) → chart lines
+    const loadOverlays = () => {
+      try {
+        const all = JSON.parse(localStorage.getItem('trading_journal') || '[]')
+        const overlays = {}
+        all
+          .filter(t => t.date === today && !t.result && !t.exitPrice && t.entry)
+          .forEach(t => {
+            if (!overlays[t.pair]) {
+              overlays[t.pair] = {
+                pair:      t.pair,
+                direction: t.direction,
+                entry:     parseFloat(t.entry),
+                sl:        t.sl   ? parseFloat(t.sl)  : undefined,
+                tp1:       t.tp   ? parseFloat(t.tp)  : undefined,
+                grade:     'MANUAL',
+              }
+            }
+          })
+        setJournalOverlays(overlays)
+      } catch (_) {}
+    }
+
+    loadOverlays()
+  }, [])
+
+  // Reload journal overlays when localStorage changes (e.g. after trade close)
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === 'trading_journal') {
+        const today = new Date().toISOString().split('T')[0]
+        try {
+          const all = JSON.parse(e.newValue || '[]')
+          const overlays = {}
+          all
+            .filter(t => t.date === today && !t.result && !t.exitPrice && t.entry)
+            .forEach(t => {
+              if (!overlays[t.pair]) {
+                overlays[t.pair] = {
+                  pair:      t.pair,
+                  direction: t.direction,
+                  entry:     parseFloat(t.entry),
+                  sl:        t.sl ? parseFloat(t.sl) : undefined,
+                  tp1:       t.tp ? parseFloat(t.tp) : undefined,
+                  grade:     'MANUAL',
+                }
+              }
+            })
+          setJournalOverlays(overlays)
+        } catch (_) {}
+      }
+    }
+    window.addEventListener('storage', handler)
+    return () => window.removeEventListener('storage', handler)
+  }, [])
 
   // Seed from REST, then WS takes over
   useEffect(() => {
@@ -1137,9 +1229,13 @@ export default function Signals() {
           gap: 14,
         }}>
           {PAIRS.map(pair => {
-            const sig = signals.find(s =>
+            // Scanner signal takes priority; fall back to open journal trade
+            const scannerSig = signals.find(s =>
               s.pair === pair && (s.grade === 'STRONG' || s.grade === 'WATCH')
             ) ?? null
+            const sig = scannerSig ?? journalOverlays[pair] ?? null
+            const isManual = sig?.grade === 'MANUAL'
+
             const expanded = expandedCharts.has(pair)
             const togglePair = () => setExpandedCharts(prev => {
               const next = new Set(prev)
@@ -1164,11 +1260,14 @@ export default function Signals() {
                       <span style={{
                         fontSize: '0.62rem', fontWeight: 700,
                         padding: '2px 7px', borderRadius: 4,
-                        background: sig.grade === 'STRONG'
-                          ? 'rgba(245,158,11,0.15)' : 'rgba(59,130,246,0.12)',
-                        color: sig.grade === 'STRONG' ? 'var(--gold, #f59e0b)' : '#60a5fa',
+                        background: isManual
+                          ? 'rgba(139,92,246,0.15)'
+                          : sig.grade === 'STRONG'
+                            ? 'rgba(245,158,11,0.15)' : 'rgba(59,130,246,0.12)',
+                        color: isManual ? '#a78bfa'
+                             : sig.grade === 'STRONG' ? 'var(--gold, #f59e0b)' : '#60a5fa',
                       }}>
-                        {sig.grade} · {sig.score}pts
+                        {isManual ? 'OPEN TRADE' : `${sig.grade} · ${sig.score}pts`}
                       </span>
                     )}
                     {sig?.direction && (
@@ -1187,13 +1286,13 @@ export default function Signals() {
 
                 {expanded && (
                   <>
-                    {/* Signal level legend */}
+                    {/* Price level legend */}
                     {sig?.entry && (
                       <div style={{ display: 'flex', gap: 12, marginBottom: 8,
                                     fontSize: '0.68rem', fontFamily: "'JetBrains Mono', monospace" }}>
                         <span style={{ color: '#f59e0b' }}>● Entry {sig.entry}</span>
                         {sig.sl  && <span style={{ color: '#ef4444' }}>● SL {sig.sl}</span>}
-                        {sig.tp1 && <span style={{ color: '#22c55e' }}>● TP1 {sig.tp1}</span>}
+                        {sig.tp1 && <span style={{ color: '#22c55e' }}>● TP {sig.tp1}</span>}
                         {sig.tp2 && <span style={{ color: '#16a34a' }}>● TP2 {sig.tp2}</span>}
                       </div>
                     )}
