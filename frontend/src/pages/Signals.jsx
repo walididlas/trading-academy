@@ -774,7 +774,7 @@ export default function Signals() {
   const [loading, setLoading] = useState(true)
   const [lastRefresh, setLastRefresh] = useState(null)
   const [showAccountModal, setShowAccountModal] = useState(false)
-  const [showCharts, setShowCharts] = useState(true)
+  const [expandedCharts, setExpandedCharts] = useState(() => new Set(PAIRS))
   const priceAlerts = useRef({})  // { pair: entry }
 
   // Seed from REST, then WS takes over
@@ -1113,74 +1113,98 @@ export default function Signals() {
                         textTransform: 'uppercase', letterSpacing: '0.08em' }}>
             Live Charts — H1 Candles
           </div>
-          <button
-            className="btn btn-secondary btn-sm"
-            onClick={() => setShowCharts(v => !v)}
-            style={{ fontSize: '0.72rem' }}
-          >
-            {showCharts ? 'Hide' : 'Show'} Charts
-          </button>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => setExpandedCharts(new Set(PAIRS))}
+              style={{ fontSize: '0.72rem' }}
+            >
+              Expand All
+            </button>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => setExpandedCharts(new Set())}
+              style={{ fontSize: '0.72rem' }}
+            >
+              Collapse All
+            </button>
+          </div>
         </div>
 
-        {showCharts && (
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
-            gap: 14,
-          }}>
-            {PAIRS.map(pair => {
-              const sig = signals.find(s =>
-                s.pair === pair && (s.grade === 'STRONG' || s.grade === 'WATCH')
-              ) ?? null
-              return (
-                <div key={pair} className="card" style={{ padding: '10px 12px' }}>
-                  {/* Chart header */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between',
-                                alignItems: 'center', marginBottom: 8 }}>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+          gap: 14,
+        }}>
+          {PAIRS.map(pair => {
+            const sig = signals.find(s =>
+              s.pair === pair && (s.grade === 'STRONG' || s.grade === 'WATCH')
+            ) ?? null
+            const expanded = expandedCharts.has(pair)
+            const togglePair = () => setExpandedCharts(prev => {
+              const next = new Set(prev)
+              next.has(pair) ? next.delete(pair) : next.add(pair)
+              return next
+            })
+            return (
+              <div key={pair} className="card" style={{ padding: '10px 12px' }}>
+                {/* Chart header — always visible, tap to collapse/expand */}
+                <div
+                  style={{ display: 'flex', justifyContent: 'space-between',
+                            alignItems: 'center', marginBottom: expanded ? 8 : 0,
+                            cursor: 'pointer', userSelect: 'none' }}
+                  onClick={togglePair}
+                >
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                     <span style={{ fontWeight: 700, fontSize: '0.875rem',
                                    fontFamily: "'JetBrains Mono', monospace" }}>
                       {pair}
                     </span>
-                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                      {sig && (
-                        <span style={{
-                          fontSize: '0.62rem', fontWeight: 700,
-                          padding: '2px 7px', borderRadius: 4,
-                          background: sig.grade === 'STRONG'
-                            ? 'rgba(245,158,11,0.15)' : 'rgba(59,130,246,0.12)',
-                          color: sig.grade === 'STRONG' ? 'var(--gold, #f59e0b)' : '#60a5fa',
-                        }}>
-                          {sig.grade} · {sig.score}pts
-                        </span>
-                      )}
-                      {sig?.direction && (
-                        <span style={{
-                          fontSize: '0.62rem', fontWeight: 700,
-                          color: sig.direction === 'long' ? 'var(--green)' : 'var(--red)',
-                        }}>
-                          {sig.direction === 'long' ? '▲ LONG' : '▼ SHORT'}
-                        </span>
-                      )}
-                    </div>
+                    {sig && (
+                      <span style={{
+                        fontSize: '0.62rem', fontWeight: 700,
+                        padding: '2px 7px', borderRadius: 4,
+                        background: sig.grade === 'STRONG'
+                          ? 'rgba(245,158,11,0.15)' : 'rgba(59,130,246,0.12)',
+                        color: sig.grade === 'STRONG' ? 'var(--gold, #f59e0b)' : '#60a5fa',
+                      }}>
+                        {sig.grade} · {sig.score}pts
+                      </span>
+                    )}
+                    {sig?.direction && (
+                      <span style={{
+                        fontSize: '0.62rem', fontWeight: 700,
+                        color: sig.direction === 'long' ? 'var(--green)' : 'var(--red)',
+                      }}>
+                        {sig.direction === 'long' ? '▲ LONG' : '▼ SHORT'}
+                      </span>
+                    )}
                   </div>
-
-                  {/* Signal level legend */}
-                  {sig?.entry && (
-                    <div style={{ display: 'flex', gap: 12, marginBottom: 8,
-                                  fontSize: '0.68rem', fontFamily: "'JetBrains Mono', monospace" }}>
-                      <span style={{ color: '#f59e0b' }}>● Entry {sig.entry}</span>
-                      {sig.sl  && <span style={{ color: '#ef4444' }}>● SL {sig.sl}</span>}
-                      {sig.tp1 && <span style={{ color: '#22c55e' }}>● TP1 {sig.tp1}</span>}
-                      {sig.tp2 && <span style={{ color: '#16a34a' }}>● TP2 {sig.tp2}</span>}
-                    </div>
-                  )}
-
-                  <PairChart pair={pair} signal={sig} />
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-4)' }}>
+                    {expanded ? '▲' : '▼'}
+                  </span>
                 </div>
-              )
-            })}
-          </div>
-        )}
+
+                {expanded && (
+                  <>
+                    {/* Signal level legend */}
+                    {sig?.entry && (
+                      <div style={{ display: 'flex', gap: 12, marginBottom: 8,
+                                    fontSize: '0.68rem', fontFamily: "'JetBrains Mono', monospace" }}>
+                        <span style={{ color: '#f59e0b' }}>● Entry {sig.entry}</span>
+                        {sig.sl  && <span style={{ color: '#ef4444' }}>● SL {sig.sl}</span>}
+                        {sig.tp1 && <span style={{ color: '#22c55e' }}>● TP1 {sig.tp1}</span>}
+                        {sig.tp2 && <span style={{ color: '#16a34a' }}>● TP2 {sig.tp2}</span>}
+                      </div>
+                    )}
+
+                    <PairChart pair={pair} signal={sig} />
+                  </>
+                )}
+              </div>
+            )
+          })}
+        </div>
       </div>
 
       {/* News feed */}
