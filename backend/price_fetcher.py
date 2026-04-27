@@ -196,6 +196,49 @@ async def fetch_all_pairs(ohlcv_cache: dict, session: aiohttp.ClientSession) -> 
             )
 
 
+async def warm_cache_now(ohlcv_cache: dict) -> None:
+    """
+    One-shot parallel H1 fetch for all pairs — no rate-limit delays.
+    Call once at startup (with await) so the cache is warm before the scanner's
+    first run and before any /api/candles requests arrive.
+    All 4 pairs are fetched concurrently (~5 s total vs 40 s serialised).
+    """
+    api_key = os.getenv("TWELVEDATA_API_KEY", "")
+    if not api_key:
+        logger.warning("TWELVEDATA_API_KEY not set — skipping startup warmup")
+        return
+    if _is_weekend():
+        logger.info("Startup warmup skipped — weekend, forex markets closed")
+        return
+
+    logger.info(
+        "Cache warmup: fetching H1 for %s (parallel)", list(TD_SYMBOLS.keys())
+    )
+
+    async with aiohttp.ClientSession() as session:
+        pairs   = list(TD_SYMBOLS.items())           # [(pair, td_symbol), ...]
+        tasks   = [
+            _fetch_one(session, api_key, td_sym, "1h")
+            for _, td_sym in pairs
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for (pair, _), result in zip(pairs, results):
+            if isinstance(result, Exception) or not result:
+                logger.warning("Warmup failed for %s: %s", pair, result)
+                continue
+            key = f"{pair}_60"
+            ohlcv_cache[key] = {
+                "bars":      result,
+                "symbol":    pair,
+                "timeframe": "60",
+                "source":    "twelvedata",
+                "kz":        False,
+            }
+            ohlcv_cache[pair] = ohlcv_cache[key]
+            logger.info("Warmup: %s → %d bars cached", pair, len(result))
+
+
 async def run_price_fetcher(ohlcv_cache: dict, interval_seconds: int = 300) -> None:
     """
     Background task: fetch OHLCV data every `interval_seconds` (default 5 min).

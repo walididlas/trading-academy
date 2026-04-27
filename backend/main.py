@@ -13,7 +13,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -178,11 +178,20 @@ async def _get_ohlcv(symbol: str, timeframe: str = "60") -> dict:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from scanner import run_scanner
-    from price_fetcher import run_price_fetcher
+    from price_fetcher import run_price_fetcher, warm_cache_now
     from news_fetcher import run_news_fetcher
     from calendar_fetcher import run_calendar_fetcher
 
-    # Start price fetcher first so cache is warm before scanner's first run
+    # Parallel warmup: fetch all H1 pairs concurrently before the scanner's first
+    # run. This takes ~5 s (4 concurrent requests) instead of 40 s serialised.
+    # The periodic price_task below then keeps the cache fresh every 5 min.
+    import logging as _log
+    _log.getLogger(__name__).info("Startup: warming price cache…")
+    try:
+        await warm_cache_now(_ohlcv_cache)
+    except Exception as _exc:
+        _log.getLogger(__name__).warning("Startup warmup error: %s", _exc)
+
     price_task     = asyncio.create_task(run_price_fetcher(_ohlcv_cache))
     scanner_task   = asyncio.create_task(run_scanner(manager.broadcast, _get_ohlcv))
     kz_task        = asyncio.create_task(_kz_open_scheduler())
@@ -259,6 +268,102 @@ async def get_ohlcv_bars(symbol: str, timeframe: str = "60", limit: int = 120):
     }
 
 
+@app.get("/api/candles/{symbol}")
+async def get_candles(symbol: str, timeframe: str = "1h", limit: int = 100):
+    """
+    H1 OHLCV candles for charting.
+    1. Serves from the live price-fetcher cache when warm.
+    2. Falls back to a direct Twelve Data call when the cache is cold
+       (e.g. fresh Railway deploy, first ~5 minutes after startup).
+    """
+    import aiohttp
+    from price_fetcher import TD_SYMBOLS, BASE_URL, _parse_bars
+
+    pair        = symbol.upper()
+    tf_key      = "60" if timeframe in ("1h", "60", "H1", "1H") else timeframe
+    td_interval = "1h" if tf_key == "60" else f"{tf_key}min"
+    key         = f"{pair}_{tf_key}"
+
+    # ── 1. Try warm cache (fast path, no lock needed) ─────────────────────────
+    data = _ohlcv_cache.get(key) or _ohlcv_cache.get(pair)
+    if data and data.get("bars"):
+        bars = data["bars"][-limit:]
+        return {"symbol": pair, "timeframe": "1h", "bars": bars,
+                "source": data.get("source", "cache"), "count": len(bars)}
+
+    # ── 2. Cache cold — fetch live from Twelve Data (serialised per pair) ────
+    # Per-pair lock prevents 4 charts from hammering the Twelve Data API
+    # simultaneously on a cold start — only one live fetch per pair at a time.
+    if pair not in _candle_locks:
+        _candle_locks[pair] = asyncio.Lock()
+    async with _candle_locks[pair]:
+        # Re-check cache — another request may have warmed it while we waited
+        data = _ohlcv_cache.get(key) or _ohlcv_cache.get(pair)
+        if data and data.get("bars"):
+            bars = data["bars"][-limit:]
+            return {"symbol": pair, "timeframe": "1h", "bars": bars,
+                    "source": data.get("source", "cache"), "count": len(bars)}
+
+        td_symbol = TD_SYMBOLS.get(pair)
+        if not td_symbol:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unknown pair: {pair}. Valid: {list(TD_SYMBOLS.keys())}",
+            )
+
+        api_key = os.getenv("TWELVEDATA_API_KEY", "")
+        if not api_key:
+            raise HTTPException(
+                status_code=503,
+                detail="TWELVEDATA_API_KEY not set on server — cannot fetch live data",
+            )
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    BASE_URL,
+                    params={"symbol": td_symbol, "interval": td_interval,
+                            "outputsize": min(limit, 200), "apikey": api_key, "format": "JSON"},
+                    timeout=aiohttp.ClientTimeout(total=20),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"Twelve Data HTTP {resp.status}: {body[:200]}",
+                        )
+                    payload = await resp.json(content_type=None)
+        except HTTPException:
+            raise
+        except aiohttp.ClientError as exc:
+            raise HTTPException(status_code=502,
+                                detail=f"Network error fetching Twelve Data: {exc}")
+
+        if payload.get("status") == "error":
+            raise HTTPException(
+                status_code=502,
+                detail=f"Twelve Data API error: {payload.get('message', 'unknown')}",
+            )
+
+        bars = _parse_bars(payload.get("values", []))
+        if not bars:
+            raise HTTPException(
+                status_code=502,
+                detail="Twelve Data returned no values for this symbol",
+            )
+
+        # Warm the cache so subsequent requests are instant
+        _ohlcv_cache[key] = {
+            "bars": bars, "symbol": pair, "timeframe": tf_key,
+            "source": "twelvedata_live",
+        }
+        if tf_key == "60":
+            _ohlcv_cache[pair] = _ohlcv_cache[key]
+
+    return {"symbol": pair, "timeframe": "1h", "bars": bars[-limit:],
+            "source": "twelvedata_live", "count": len(bars)}
+
+
 @app.post("/api/rescan/{pair}")
 async def rescan_pair_endpoint(pair: str):
     """
@@ -291,6 +396,10 @@ class FeedRequest(BaseModel):
 
 # Cache for MCP-pushed OHLCV data
 _ohlcv_cache: dict[str, dict] = {}
+
+# Per-pair lock — prevents multiple simultaneous cold Twelve Data fetches
+# for the same symbol (e.g. 4 charts opening at once on a fresh deploy).
+_candle_locks: dict[str, asyncio.Lock] = {}
 
 
 @app.post("/api/feed")
