@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import MobileHeader from './MobileHeader'
 import BottomNav from './BottomNav'
@@ -10,6 +10,19 @@ import { AlertProvider } from '../../contexts/AlertContext'
 export default function Layout({ children }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const location = useLocation()
+  const navigate  = useNavigate()
+
+  // SW → app navigation: notification tap sends ta_navigate when app is already open
+  useEffect(() => {
+    if (!('serviceWorker' in navigator)) return
+    const handler = (e) => {
+      if (e.data?.type === 'ta_navigate' && e.data.url) {
+        navigate(e.data.url)
+      }
+    }
+    navigator.serviceWorker.addEventListener('message', handler)
+    return () => navigator.serviceWorker.removeEventListener('message', handler)
+  }, [navigate])
 
   // Close sidebar on route change (mobile)
   useEffect(() => {

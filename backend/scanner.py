@@ -803,9 +803,10 @@ async def run_scanner(broadcast: Callable, get_ohlcv_fn: Callable) -> None:
                             title=f"🔥 {pair} {_arrow} — {curr_score}pts STRONG",
                             body=(
                                 f"Entry {_entry} · SL {_sl} · TP1 {_tp1} · TP2 {_tp2}"
-                                f"{_lots_hint} · Execute manually on MT5"
+                                f"{_lots_hint} · Tap to log outcome"
                             ),
                             tag=f"signal-{pair}", type_="signal", url="/signals",
+                            pair=pair,
                         ))
                     except Exception:
                         pass
@@ -892,3 +893,58 @@ def get_cached_signals() -> list[dict]:
         }
         for p in PAIRS
     ]
+
+
+async def rescan_pair(pair: str, get_ohlcv_fn: Callable, broadcast: Callable) -> dict:
+    """
+    Force an immediate single-pair scan (called when user reports missed/skipped outcome).
+    Updates the cached signal for this pair, broadcasts updated signals,
+    and fires a push notification if a fresh STRONG setup is found.
+    """
+    global _last_signals
+
+    pair = pair.upper()
+    if pair not in PAIRS:
+        return {"error": f"Unknown pair: {pair}"}
+
+    try:
+        h1_data  = await get_ohlcv_fn(pair, "60")
+        m15_data = await get_ohlcv_fn(pair, "15")
+        h1_bars  = h1_data.get("bars") or []
+        m15_bars = m15_data.get("bars") or []
+        sig = _score_pair(pair, h1_bars, m15_bars or None)
+    except Exception as e:
+        return {"error": str(e)}
+
+    # Splice the new signal into the cached list
+    updated = [sig if s.get("pair") == pair else s for s in _last_signals]
+    if not any(s.get("pair") == pair for s in updated):
+        updated.append(sig)
+    _last_signals = updated
+
+    await broadcast(json.dumps({"signals": _last_signals}))
+
+    # Push notification only if a fresh STRONG setup was found
+    if sig.get("grade") == "STRONG" and pair not in _strong_state:
+        _strong_state[pair] = {
+            "fired_at":     _utc_now().isoformat(),
+            "signal":       dict(sig),
+            "entry_status": "pending",
+        }
+        try:
+            from push_notifier import send_push
+            _dir   = sig.get("direction", "long")
+            _arrow = "▲ BUY" if _dir == "long" else "▼ SELL"
+            await send_push(
+                title=f"🔄 {pair} {_arrow} — Fresh Setup Found",
+                body=(
+                    f"Entry {sig.get('entry')} · SL {sig.get('sl')} "
+                    f"· TP1 {sig.get('tp1')} · Score {sig.get('score')}pts"
+                ),
+                tag=f"signal-{pair}", type_="signal", url="/signals",
+                pair=pair,
+            )
+        except Exception:
+            pass
+
+    return sig

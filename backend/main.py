@@ -161,26 +161,24 @@ async def _news_warning_scheduler():
 
 
 
+async def _get_ohlcv(symbol: str, timeframe: str = "60") -> dict:
+    """
+    Return cached OHLCV data for the scanner.
+    Priority: yfinance auto-cache → manually pushed MCP data → empty.
+    No live TradingView call — Railway has no CDP connection.
+    """
+    key = f"{symbol}_{timeframe}"
+    if key in _ohlcv_cache:
+        return _ohlcv_cache[key]
+    if symbol in _ohlcv_cache:
+        return _ohlcv_cache[symbol]
+    return {"bars": [], "symbol": symbol, "timeframe": timeframe}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from scanner import run_scanner
     from price_fetcher import run_price_fetcher
-
-    async def _get_ohlcv(symbol: str, timeframe: str = "60") -> dict:
-        """
-        Return cached OHLCV data for the scanner.
-        Priority: yfinance auto-cache → manually pushed MCP data → empty.
-        No live TradingView call — Railway has no CDP connection.
-        """
-        key = f"{symbol}_{timeframe}"
-        if key in _ohlcv_cache:
-            return _ohlcv_cache[key]
-        # Fallback: plain symbol key (H1 legacy)
-        if symbol in _ohlcv_cache:
-            return _ohlcv_cache[symbol]
-        return {"bars": [], "symbol": symbol, "timeframe": timeframe}
-
-    from news_fetcher import run_news_fetcher
     from calendar_fetcher import run_calendar_fetcher
 
     # Start price fetcher first so cache is warm before scanner's first run
@@ -240,6 +238,18 @@ async def health():
 async def get_signals():
     from scanner import get_cached_signals
     return {"signals": get_cached_signals()}
+
+
+@app.post("/api/rescan/{pair}")
+async def rescan_pair_endpoint(pair: str):
+    """
+    Force an immediate rescan of a single pair.
+    Called by the Signals page when the user reports a missed/skipped outcome,
+    so we can check for a fresh setup and push a notification if one exists.
+    """
+    from scanner import rescan_pair
+    result = await rescan_pair(pair.upper(), _get_ohlcv, manager.broadcast)
+    return result
 
 
 class ChatRequest(BaseModel):

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { API_BASE } from '../config'
 import { useAlerts } from '../contexts/AlertContext'
 import { useAccount } from '../hooks/useAccount'
@@ -595,16 +596,183 @@ function MonitoringRow({ signal }) {
   )
 }
 
+// ── Outcome prompt helpers ────────────────────────────────────────────────────
+function _writeOutcomeEntry(pair, outcome, reason) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(`ta_outcome_pending_${pair}`) || 'null')
+    const sig = stored?.signal ?? {}
+    const entry = {
+      id:          `outcome_${Date.now()}`,
+      date:        new Date().toISOString().slice(0, 10),
+      pair,
+      direction:   sig.direction ?? '',
+      entry:       sig.entry?.toString() ?? '',
+      sl:          sig.sl?.toString() ?? '',
+      tp:          sig.tp1?.toString() ?? '',
+      result:      outcome === 'taken' ? '' : outcome,
+      outcome,
+      reasoning:   reason.trim() ||
+                   (outcome === 'taken'   ? 'Took the trade'
+                  : outcome === 'missed'  ? 'Price never reached entry level'
+                  : 'Chose to skip this setup'),
+      signalScore: sig.score ?? null,
+      signalGrade: sig.grade ?? null,
+      auto:        true,
+      type:        'outcome_check',
+    }
+    const existing = JSON.parse(localStorage.getItem('trading_journal') || '[]')
+    const cutoff   = Date.now() - 2 * 60 * 60 * 1000
+    const isDup    = existing.some(t =>
+      t.type === 'outcome_check' && t.pair === pair &&
+      parseInt(t.id?.replace('outcome_', '') ?? '0', 10) > cutoff
+    )
+    if (!isDup) {
+      localStorage.setItem('trading_journal', JSON.stringify([entry, ...existing]))
+    }
+  } catch (_) {}
+}
+
+// ── Outcome prompt card ───────────────────────────────────────────────────────
+function OutcomePromptCard({ pair, onDismiss }) {
+  const sig = (() => {
+    try { return JSON.parse(localStorage.getItem(`ta_outcome_pending_${pair}`) || 'null')?.signal ?? {} }
+    catch { return {} }
+  })()
+
+  const [stage,   setStage]   = useState('choosing') // 'choosing' | 'reason'
+  const [outcome, setOutcome] = useState(null)
+  const [reason,  setReason]  = useState('')
+  const [busy,    setBusy]    = useState(false)
+
+  function choose(choice) {
+    if (choice === 'taken') {
+      _writeOutcomeEntry(pair, 'taken', '')
+      onDismiss()
+      return
+    }
+    setOutcome(choice)
+    setStage('reason')
+  }
+
+  async function submit() {
+    setBusy(true)
+    _writeOutcomeEntry(pair, outcome, reason)
+    try { await fetch(`${API_BASE}/api/rescan/${encodeURIComponent(pair)}`, { method: 'POST' }) } catch (_) {}
+    onDismiss()
+  }
+
+  const dir   = sig.direction
+  const arrow = dir === 'long' ? '▲ LONG' : dir === 'short' ? '▼ SHORT' : ''
+
+  return (
+    <div style={{
+      background:   'var(--surface-1, #1a1f2e)',
+      border:       '2px solid var(--gold-ring, #d97706)',
+      borderRadius: 'var(--r, 10px)',
+      padding:      '20px 18px',
+      marginBottom: 16,
+    }}>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--gold, #f59e0b)', marginBottom: 2 }}>
+            📋 Did you take this trade?
+          </div>
+          <div style={{ fontSize: '0.8rem', color: 'var(--text-3, #9ca3af)' }}>
+            {pair} {arrow}
+            {sig.entry && <span> · Entry {sig.entry}</span>}
+            {sig.score  && <span> · {sig.score}pts</span>}
+          </div>
+        </div>
+        <button onClick={onDismiss} style={{
+          background: 'none', border: 'none', color: 'var(--text-4, #6b7280)',
+          cursor: 'pointer', fontSize: '1.1rem', padding: 2,
+        }}>✕</button>
+      </div>
+
+      {stage === 'choosing' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <button onClick={() => choose('taken')} style={btnStyle('#16a34a', '#dcfce7')}>
+            ✅ Yes — Took It
+          </button>
+          <button onClick={() => choose('missed')} style={btnStyle('#b45309', '#fef3c7')}>
+            ❌ No — Missed Entry (price didn't reach my level)
+          </button>
+          <button onClick={() => choose('skipped')} style={btnStyle('#6b7280', '#f3f4f6')}>
+            ⏭ No — Skipped (chose not to take it)
+          </button>
+        </div>
+      )}
+
+      {stage === 'reason' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div style={{ fontSize: '0.85rem', color: 'var(--text-2, #d1d5db)', fontWeight: 600 }}>
+            {outcome === 'missed' ? '❌ Missed Entry' : '⏭ Skipped'} — what happened?
+          </div>
+          <textarea
+            value={reason}
+            onChange={e => setReason(e.target.value)}
+            placeholder={
+              outcome === 'missed'
+                ? 'e.g. Price moved straight to TP without pulling back to entry…'
+                : 'e.g. KZ was not active, news risk was too high…'
+            }
+            rows={3}
+            style={{
+              width: '100%', boxSizing: 'border-box',
+              padding: '10px 12px', borderRadius: 8,
+              background: 'var(--surface-2, #111827)',
+              border: '1px solid var(--border, #374151)',
+              color: 'var(--text-1, #f9fafb)',
+              fontSize: '0.875rem', resize: 'vertical',
+              fontFamily: 'inherit',
+            }}
+          />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button onClick={() => setStage('choosing')} style={{
+              flex: 1, padding: '10px', background: 'transparent',
+              border: '1px solid var(--border, #374151)', borderRadius: 8,
+              color: 'var(--text-3, #9ca3af)', cursor: 'pointer', fontSize: '0.875rem',
+            }}>
+              ← Back
+            </button>
+            <button onClick={submit} disabled={busy} style={{
+              flex: 2, padding: '10px', background: '#2563eb',
+              border: 'none', borderRadius: 8, color: '#fff',
+              cursor: busy ? 'default' : 'pointer', fontSize: '0.875rem',
+              fontWeight: 700, opacity: busy ? 0.7 : 1,
+              touchAction: 'manipulation',
+            }}>
+              {busy ? 'Logging…' : 'Log & Rescan Pair'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function btnStyle(borderColor, _bg) {
+  return {
+    padding: '12px 14px', background: 'var(--surface-2, #111827)',
+    border: `1.5px solid ${borderColor}`, borderRadius: 8,
+    color: 'var(--text-1, #f9fafb)', cursor: 'pointer',
+    fontSize: '0.875rem', fontWeight: 600, textAlign: 'left',
+    touchAction: 'manipulation',
+  }
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export default function Signals() {
   const { signals: ctxSignals, news, wsStatus, permission, requestPermission, resetPushSubscription, pushSubscribed, addToast } = useAlerts()
   const { balance, setBalance, riskPct, setRiskPct, calcLots, hasBalance } = useAccount()
   const { getNewsRiskForPair, riskByPair, nextEventByPair } = useCalendar()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const outcomePair = searchParams.get('outcome_pair') || null
   const [signals, setSignals] = useState([])
   const [loading, setLoading] = useState(true)
   const [lastRefresh, setLastRefresh] = useState(null)
   const [showAccountModal, setShowAccountModal] = useState(false)
-  const [outcomeConfirmed, setOutcomeConfirmed] = useState(null)  // { pair, label }
   const priceAlerts = useRef({})  // { pair: entry }
 
   // Seed from REST, then WS takes over
@@ -615,48 +783,6 @@ export default function Signals() {
       .catch(() => { setLoading(false) })
   }, [])
 
-  // Process outcome URL params (app was closed when notification fired, SW opened it)
-  useEffect(() => {
-    const params  = new URLSearchParams(window.location.search)
-    const outcome = params.get('outcome')
-    const pair    = params.get('pair')
-    if (!outcome || !pair) return
-
-    const LABELS = { taken: 'Took the trade', missed: 'Missed entry', skipped: 'Skipped' }
-    try {
-      const stored = JSON.parse(localStorage.getItem(`ta_outcome_pending_${pair}`) || 'null')
-      const sig    = stored?.signal ?? {}
-      const entry  = {
-        id:          `outcome_${Date.now()}`,
-        date:        new Date().toISOString().slice(0, 10),
-        pair,
-        direction:   sig.direction ?? '',
-        entry:       sig.entry?.toString() ?? '',
-        sl:          sig.sl?.toString() ?? '',
-        tp:          sig.tp1?.toString() ?? '',
-        result:      outcome === 'taken' ? '' : outcome,
-        outcome,
-        reasoning:   LABELS[outcome] ?? outcome,
-        signalScore: sig.score ?? null,
-        signalGrade: sig.grade ?? null,
-        auto:        true,
-        type:        'outcome_check',
-      }
-      const existing = JSON.parse(localStorage.getItem('trading_journal') || '[]')
-      const cutoff   = Date.now() - 2 * 60 * 60 * 1000
-      const isDup    = existing.some(t =>
-        t.type === 'outcome_check' && t.pair === pair &&
-        parseInt(t.id?.replace('outcome_', '') ?? '0', 10) > cutoff
-      )
-      if (!isDup) {
-        localStorage.setItem('trading_journal', JSON.stringify([entry, ...existing]))
-        setOutcomeConfirmed({ pair, label: LABELS[outcome] ?? outcome })
-        setTimeout(() => setOutcomeConfirmed(null), 5000)
-      }
-    } catch (_) {}
-    window.history.replaceState({}, '', window.location.pathname)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   useEffect(() => {
     if (ctxSignals.length) {
@@ -810,6 +936,14 @@ export default function Signals() {
           🔄 Reset Notifications
         </button>
       </div>
+
+      {/* Outcome prompt — shown when notification tap lands with ?outcome_pair=PAIR */}
+      {outcomePair && (
+        <OutcomePromptCard
+          pair={outcomePair}
+          onDismiss={() => setSearchParams({})}
+        />
+      )}
 
       {/* Account setup modal */}
       {showAccountModal && (
