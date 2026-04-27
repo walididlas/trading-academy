@@ -417,8 +417,10 @@ function TradeForm({ initial, onSave, onCancel, isEdit }) {
 }
 
 // ── Trade card ────────────────────────────────────────────────────────────────
-function TradeCard({ trade, onEdit, onDelete }) {
-  const [expanded, setExpanded] = useState(false)
+function TradeCard({ trade, onEdit, onDelete, onClose }) {
+  const [expanded,    setExpanded]    = useState(false)
+  const [closingOpen, setClosingOpen] = useState(false)
+  const [customExit,  setCustomExit]  = useState('')
 
   const rr = trade.rr || (trade.entry && trade.sl && trade.tp
     ? calcRR(trade.entry, trade.sl, trade.tp, trade.pair, trade.direction)?.toFixed(1)
@@ -548,6 +550,14 @@ function TradeCard({ trade, onEdit, onDelete }) {
             ))}
           </div>
 
+          {/* Signal score badge */}
+          {trade.signalScore != null && (
+            <div style={{ display: 'flex', gap: 10, marginBottom: 12, fontSize: '0.75rem', color: 'var(--text-3)' }}>
+              <span>Signal score <strong style={{ color: 'var(--gold)' }}>{trade.signalScore}pts</strong></span>
+              {trade.signalGrade && <span>Grade <strong style={{ color: 'var(--gold)' }}>{trade.signalGrade}</strong></span>}
+            </div>
+          )}
+
           {/* Reasoning */}
           {trade.reasoning && (
             <div style={{
@@ -556,6 +566,78 @@ function TradeCard({ trade, onEdit, onDelete }) {
               lineHeight: 1.6, marginBottom: 12,
             }}>
               {trade.reasoning}
+            </div>
+          )}
+
+          {/* Close Trade (open positions only) */}
+          {isOpen && onClose && (
+            <div style={{ marginBottom: 10 }}>
+              {!closingOpen ? (
+                <button
+                  className="btn btn-sm"
+                  style={{ background: 'rgba(34,211,165,0.12)', color: 'var(--green)', border: '1px solid rgba(34,211,165,0.3)', fontWeight: 700 }}
+                  onClick={() => setClosingOpen(true)}
+                >
+                  Close Trade
+                </button>
+              ) : (
+                <div style={{
+                  background: 'var(--surface-3)', borderRadius: 8, padding: '12px 14px',
+                  border: '1px solid var(--border)',
+                }}>
+                  <div style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-3)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 10 }}>
+                    Close at:
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                    {trade.tp && (
+                      <button
+                        className="btn btn-sm"
+                        style={{ background: 'rgba(34,211,165,0.15)', color: 'var(--green)', border: '1px solid rgba(34,211,165,0.4)', fontWeight: 700 }}
+                        onClick={() => { onClose(trade.id, 'tp'); setClosingOpen(false) }}
+                      >
+                        ✓ TP Hit <span style={{ fontFamily: 'monospace', fontSize: '0.7rem', opacity: 0.8 }}>({parseFloat(trade.tp).toFixed(dec)})</span>
+                      </button>
+                    )}
+                    {trade.sl && (
+                      <button
+                        className="btn btn-sm"
+                        style={{ background: 'rgba(239,68,68,0.12)', color: 'var(--red)', border: '1px solid rgba(239,68,68,0.3)', fontWeight: 700 }}
+                        onClick={() => { onClose(trade.id, 'sl'); setClosingOpen(false) }}
+                      >
+                        ✗ SL Hit <span style={{ fontFamily: 'monospace', fontSize: '0.7rem', opacity: 0.8 }}>({parseFloat(trade.sl).toFixed(dec)})</span>
+                      </button>
+                    )}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <input
+                        type="number"
+                        step="any"
+                        placeholder="Custom exit"
+                        value={customExit}
+                        onChange={e => setCustomExit(e.target.value)}
+                        style={{
+                          width: 110, padding: '5px 8px', borderRadius: 6,
+                          background: 'var(--surface-2)', border: '1px solid var(--border)',
+                          color: 'var(--text-1)', fontSize: '0.8rem', fontFamily: 'monospace',
+                        }}
+                      />
+                      <button
+                        className="btn btn-sm"
+                        disabled={!customExit}
+                        style={{ opacity: customExit ? 1 : 0.4 }}
+                        onClick={() => { onClose(trade.id, 'custom', customExit); setClosingOpen(false); setCustomExit('') }}
+                      >
+                        OK
+                      </button>
+                    </div>
+                    <button
+                      onClick={() => setClosingOpen(false)}
+                      style={{ background: 'none', border: 'none', color: 'var(--text-4)', cursor: 'pointer', fontSize: '0.8rem', padding: '4px 6px' }}
+                    >
+                      cancel
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -753,6 +835,26 @@ export default function Journal() {
     if (confirm('Delete this trade?')) setTrades(ts => ts.filter(t => t.id !== id))
   }, [])
 
+  const handleClose = useCallback((id, type, customPrice) => {
+    setTrades(ts => ts.map(t => {
+      if (t.id !== id) return t
+      const exitPrice = type === 'tp' ? t.tp : type === 'sl' ? t.sl : customPrice
+      const ps  = ({ XAUUSD: 0.1, GBPJPY: 0.01, USDJPY: 0.01, NZDJPY: 0.01 })[t.pair] ?? 0.0001
+      const raw = (parseFloat(exitPrice) - parseFloat(t.entry)) / ps
+      const pips = t.direction === 'long' ? raw : -raw
+      const pnl  = calcPnl(pips, t.lotSize, t.pair)
+      const result = pips > 0 ? 'win' : pips < 0 ? 'loss' : 'breakeven'
+      return {
+        ...t,
+        exitPrice: exitPrice?.toString() ?? t.exitPrice,
+        pips:      pips != null && !isNaN(pips) ? pips.toFixed(1) : t.pips,
+        pnl:       pnl  != null && !isNaN(pnl)  ? pnl.toFixed(2)  : t.pnl,
+        result,
+        closedAt:  new Date().toISOString(),
+      }
+    }))
+  }, [])
+
   const editingTrade = editId ? trades.find(t => t.id === editId) : null
 
   return (
@@ -876,7 +978,7 @@ export default function Journal() {
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {openTrades.map(t => (
-              <TradeCard key={t.id} trade={t} onEdit={handleEdit} onDelete={handleDelete} />
+              <TradeCard key={t.id} trade={t} onEdit={handleEdit} onDelete={handleDelete} onClose={handleClose} />
             ))}
           </div>
         </div>
@@ -935,7 +1037,7 @@ export default function Journal() {
                 <WeekGroup weekLabel={label} trades={wTrades} />
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {wTrades.map(t => (
-                    <TradeCard key={t.id} trade={t} onEdit={handleEdit} onDelete={handleDelete} />
+                    <TradeCard key={t.id} trade={t} onEdit={handleEdit} onDelete={handleDelete} onClose={handleClose} />
                   ))}
                 </div>
               </div>

@@ -598,29 +598,98 @@ function MonitoringRow({ signal }) {
 }
 
 // ── Outcome prompt helpers ────────────────────────────────────────────────────
+const _PIP_SIZE  = { XAUUSD: 0.1, GBPJPY: 0.01, USDJPY: 0.01, NZDJPY: 0.01 }
+const _PIP_VALUE = { XAUUSD: 100, GBPJPY: 6.67, NZDJPY: 6.67 }
+
+function _iccGrade(kz, trendAligned, iccValid, rr) {
+  let s = 0
+  if (kz) s++
+  if (trendAligned) s++
+  if (iccValid) s++
+  if (rr != null && rr >= 3) s++
+  return s === 4 ? 'A' : s === 3 ? 'B' : s === 2 ? 'C' : 'F'
+}
+
+function _buildJournalEntry(pair, outcome, reason, sig) {
+  const crit         = sig.criteria ?? {}
+  const kz           = !!(crit.kill_zone?.triggered)
+  const trendAligned = !!(crit.ema50?.triggered)
+  const iccValid     = !!(crit.order_block?.triggered || crit.fvg?.triggered)
+
+  const kzDetail = (crit.kill_zone?.detail ?? '').toLowerCase()
+  let session = 'Other'
+  if (kzDetail.includes('london') || kzDetail.includes('frankfurt')) session = 'London'
+  else if (kzDetail.includes('new york') || kzDetail.includes('ny')) session = 'NY'
+  else {
+    const hr = new Date().getUTCHours()
+    if (hr >= 7 && hr < 12) session = 'London'
+    else if (hr >= 13 && hr < 17) session = 'NY'
+  }
+
+  let lotSize = '0.01'
+  try {
+    const balance = parseFloat(localStorage.getItem('trading_balance') || '0')
+    const riskPct = parseFloat(localStorage.getItem('trading_risk_pct') || '1')
+    if (balance > 0 && sig.entry && sig.sl) {
+      const ps      = _PIP_SIZE[pair]  ?? 0.0001
+      const pv      = _PIP_VALUE[pair] ?? 10
+      const pipRisk = Math.abs(parseFloat(sig.entry) - parseFloat(sig.sl)) / ps
+      if (pipRisk > 0) {
+        const lots = (balance * (riskPct / 100)) / (pipRisk * pv)
+        lotSize = Math.max(0.01, Math.round(lots * 100) / 100).toFixed(2)
+      }
+    }
+  } catch (_) {}
+
+  let rr = ''
+  try {
+    if (sig.entry && sig.sl && sig.tp1) {
+      const ps     = _PIP_SIZE[pair] ?? 0.0001
+      const risk   = Math.abs(parseFloat(sig.entry) - parseFloat(sig.sl)) / ps
+      const reward = Math.abs(parseFloat(sig.tp1) - parseFloat(sig.entry)) / ps
+      if (risk > 0) rr = (reward / risk).toFixed(2)
+    }
+  } catch (_) {}
+
+  return {
+    id:           `outcome_${Date.now()}`,
+    date:         new Date().toISOString().slice(0, 10),
+    pair,
+    direction:    sig.direction ?? '',
+    session,
+    entry:        sig.entry?.toString() ?? '',
+    sl:           sig.sl?.toString() ?? '',
+    tp:           sig.tp1?.toString() ?? '',
+    tp1:          sig.tp1?.toString() ?? '',
+    tp2:          sig.tp2?.toString() ?? '',
+    tp3:          sig.tp3?.toString() ?? '',
+    exitPrice:    '',
+    lotSize,
+    result:       outcome === 'taken' ? '' : outcome,
+    pips:         '',
+    pnl:          '',
+    rr,
+    outcome,
+    kz,
+    trendAligned,
+    iccValid,
+    grade:        _iccGrade(kz, trendAligned, iccValid, rr ? parseFloat(rr) : null),
+    reasoning:    reason.trim() ||
+                  (outcome === 'taken'   ? 'Took the trade'
+                 : outcome === 'missed'  ? 'Price never reached entry level'
+                 : 'Chose to skip this setup'),
+    signalScore:  sig.score ?? null,
+    signalGrade:  sig.grade ?? null,
+    auto:         true,
+    type:         'outcome_check',
+  }
+}
+
 function _writeOutcomeEntry(pair, outcome, reason) {
   try {
     const stored = JSON.parse(localStorage.getItem(`ta_outcome_pending_${pair}`) || 'null')
-    const sig = stored?.signal ?? {}
-    const entry = {
-      id:          `outcome_${Date.now()}`,
-      date:        new Date().toISOString().slice(0, 10),
-      pair,
-      direction:   sig.direction ?? '',
-      entry:       sig.entry?.toString() ?? '',
-      sl:          sig.sl?.toString() ?? '',
-      tp:          sig.tp1?.toString() ?? '',
-      result:      outcome === 'taken' ? '' : outcome,
-      outcome,
-      reasoning:   reason.trim() ||
-                   (outcome === 'taken'   ? 'Took the trade'
-                  : outcome === 'missed'  ? 'Price never reached entry level'
-                  : 'Chose to skip this setup'),
-      signalScore: sig.score ?? null,
-      signalGrade: sig.grade ?? null,
-      auto:        true,
-      type:        'outcome_check',
-    }
+    const sig    = stored?.signal ?? {}
+    const entry  = _buildJournalEntry(pair, outcome, reason, sig)
     const existing = JSON.parse(localStorage.getItem('trading_journal') || '[]')
     const cutoff   = Date.now() - 2 * 60 * 60 * 1000
     const isDup    = existing.some(t =>
