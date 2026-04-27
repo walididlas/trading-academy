@@ -179,6 +179,7 @@ async def _get_ohlcv(symbol: str, timeframe: str = "60") -> dict:
 async def lifespan(app: FastAPI):
     from scanner import run_scanner
     from price_fetcher import run_price_fetcher
+    from news_fetcher import run_news_fetcher
     from calendar_fetcher import run_calendar_fetcher
 
     # Start price fetcher first so cache is warm before scanner's first run
