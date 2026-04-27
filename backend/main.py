@@ -20,11 +20,129 @@ from pydantic import BaseModel
 
 load_dotenv()
 
-# ── Journal persistence (JSON file) ───────────────────────────────────────────
+# ── Journal persistence ────────────────────────────────────────────────────────
+#
+#  Primary:  PostgreSQL via DATABASE_URL (Supabase free tier)
+#  Fallback: local JSON file  (used when DATABASE_URL is not set)
+#
+# The table is created automatically on first startup; no manual SQL needed.
 
+import logging as _jlog
+
+try:
+    import psycopg2
+    import psycopg2.extras
+    from psycopg2.pool import ThreadedConnectionPool as _PGPool
+    _psycopg2_ok = True
+except ImportError:
+    _psycopg2_ok = False
+
+_db_pool = None           # ThreadedConnectionPool when Supabase is configured
 _JOURNAL_PATH = os.path.join(os.path.dirname(__file__), "data", "journal.json")
 _journal_lock = threading.Lock()
 
+
+def _init_db() -> None:
+    """Connect to PostgreSQL and create the journal table if it doesn't exist."""
+    global _db_pool
+    if not _psycopg2_ok:
+        return
+    url = os.getenv("DATABASE_URL", "")
+    if not url:
+        return
+    # Supabase requires SSL; add sslmode if the caller hasn't already
+    if "sslmode" not in url:
+        url += ("&" if "?" in url else "?") + "sslmode=require"
+    try:
+        pool = _PGPool(1, 5, url)
+        conn = pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS journal_trades (
+                        id          TEXT PRIMARY KEY,
+                        trade       JSONB        NOT NULL,
+                        created_at  TIMESTAMPTZ  DEFAULT NOW()
+                    )
+                """)
+            conn.commit()
+        finally:
+            pool.putconn(conn)
+        _db_pool = pool
+        _jlog.getLogger(__name__).info("Journal: connected to PostgreSQL (Supabase)")
+    except Exception as exc:
+        _jlog.getLogger(__name__).warning("Journal: DB init failed (%s) — using JSON file fallback", exc)
+        _db_pool = None
+
+
+# ── DB helpers (used when _db_pool is set) ───────────────────────────────────
+
+def _db_get_trades() -> list:
+    conn = _db_pool.getconn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT trade FROM journal_trades ORDER BY created_at DESC")
+            return [dict(r["trade"]) for r in cur.fetchall()]
+    finally:
+        _db_pool.putconn(conn)
+
+
+def _db_add_trade(trade: dict) -> dict:
+    conn = _db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            # Outcome dedup: one outcome_check per pair within the last 2 hours
+            if trade.get("type") == "outcome_check":
+                cur.execute(
+                    """SELECT 1 FROM journal_trades
+                       WHERE trade->>'type' = 'outcome_check'
+                         AND trade->>'pair' = %s
+                         AND created_at > NOW() - INTERVAL '2 hours'
+                       LIMIT 1""",
+                    (trade.get("pair"),),
+                )
+                if cur.fetchone():
+                    return trade          # silent dedup
+            cur.execute(
+                "INSERT INTO journal_trades (id, trade) VALUES (%s, %s::jsonb)"
+                " ON CONFLICT (id) DO NOTHING",
+                (trade["id"], json.dumps(trade)),
+            )
+        conn.commit()
+        return trade
+    finally:
+        _db_pool.putconn(conn)
+
+
+def _db_update_trade(trade_id: str, updates: dict) -> dict | None:
+    conn = _db_pool.getconn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "UPDATE journal_trades SET trade = trade || %s::jsonb"
+                " WHERE id = %s RETURNING trade",
+                (json.dumps(updates), trade_id),
+            )
+            row = cur.fetchone()
+        conn.commit()
+        return dict(row["trade"]) if row else None
+    finally:
+        _db_pool.putconn(conn)
+
+
+def _db_delete_trade(trade_id: str) -> bool:
+    conn = _db_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM journal_trades WHERE id = %s", (trade_id,))
+            deleted = cur.rowcount > 0
+        conn.commit()
+        return deleted
+    finally:
+        _db_pool.putconn(conn)
+
+
+# ── JSON file fallback (used when DATABASE_URL is not set) ───────────────────
 
 def _load_journal() -> list:
     try:
@@ -201,6 +319,9 @@ async def lifespan(app: FastAPI):
     from price_fetcher import run_price_fetcher, warm_cache_now
     from news_fetcher import run_news_fetcher
     from calendar_fetcher import run_calendar_fetcher
+
+    # Connect to Supabase PostgreSQL (no-op if DATABASE_URL is not set)
+    _init_db()
 
     # Parallel warmup: fetch all H1 pairs concurrently before the scanner's first
     # run. This takes ~5 s (4 concurrent requests) instead of 40 s serialised.
@@ -563,8 +684,12 @@ async def push_test():
 
 @app.get("/api/journal")
 async def get_journal():
-    with _journal_lock:
-        trades = _load_journal()
+    loop = asyncio.get_event_loop()
+    if _db_pool:
+        trades = await loop.run_in_executor(None, _db_get_trades)
+    else:
+        with _journal_lock:
+            trades = _load_journal()
     return {"trades": trades}
 
 
@@ -573,12 +698,15 @@ async def add_trade(request: Request):
     trade = await request.json()
     if not isinstance(trade, dict) or not trade.get("id"):
         raise HTTPException(status_code=422, detail="Trade must be a JSON object with an 'id' field")
+    loop = asyncio.get_event_loop()
+    if _db_pool:
+        saved = await loop.run_in_executor(None, _db_add_trade, trade)
+        return saved
+    # JSON file fallback
     with _journal_lock:
         trades = _load_journal()
-        # Dedup: skip if same id already stored
         if any(t.get("id") == trade["id"] for t in trades):
             return trade
-        # Outcome dedup: one outcome_check per pair per 2 hours
         if trade.get("type") == "outcome_check":
             cutoff = datetime.now(timezone.utc).timestamp() * 1000 - 2 * 60 * 60 * 1000
             if any(
@@ -596,6 +724,13 @@ async def add_trade(request: Request):
 @app.patch("/api/journal/{trade_id}")
 async def update_trade(trade_id: str, request: Request):
     updates = await request.json()
+    loop = asyncio.get_event_loop()
+    if _db_pool:
+        updated = await loop.run_in_executor(None, _db_update_trade, trade_id, updates)
+        if updated is None:
+            raise HTTPException(status_code=404, detail="Trade not found")
+        return updated
+    # JSON file fallback
     with _journal_lock:
         trades = _load_journal()
         for i, t in enumerate(trades):
@@ -608,6 +743,13 @@ async def update_trade(trade_id: str, request: Request):
 
 @app.delete("/api/journal/{trade_id}")
 async def delete_trade(trade_id: str):
+    loop = asyncio.get_event_loop()
+    if _db_pool:
+        deleted = await loop.run_in_executor(None, _db_delete_trade, trade_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Trade not found")
+        return {"ok": True}
+    # JSON file fallback
     with _journal_lock:
         trades = _load_journal()
         updated = [t for t in trades if t.get("id") != trade_id]
