@@ -82,6 +82,8 @@ async def send_push(
     tag:     str  = "ta-alert",
     type_:   str  = "info",
     url:     str  = "/signals",
+    pair:    str  = "",
+    signal:  dict | None = None,
 ) -> None:
     """
     Send a Web Push notification to all registered subscribers.
@@ -96,11 +98,13 @@ async def send_push(
         return
 
     payload = json.dumps({
-        "title": title,
-        "body":  body,
-        "tag":   tag,
-        "type":  type_,
-        "url":   url,
+        "title":  title,
+        "body":   body,
+        "tag":    tag,
+        "type":   type_,
+        "url":    url,
+        "pair":   pair,
+        "signal": signal,
     })
 
     loop   = asyncio.get_event_loop()

@@ -971,19 +971,6 @@ export default function Signals() {
         </div>
       </div>
 
-      {/* Outcome recorded confirmation */}
-      {outcomeConfirmed && (
-        <div style={{
-          background: 'rgba(34,211,165,0.1)', border: '1px solid rgba(34,211,165,0.3)',
-          borderRadius: 'var(--r)', padding: '10px 14px', marginBottom: 14,
-          display: 'flex', alignItems: 'center', gap: 10, fontSize: '0.85rem',
-        }}>
-          <span>✅</span>
-          <span style={{ color: 'var(--green)', fontWeight: 600 }}>
-            {outcomeConfirmed.pair} outcome recorded — {outcomeConfirmed.label}
-          </span>
-        </div>
-      )}
 
 
       {/* No balance warning */}
