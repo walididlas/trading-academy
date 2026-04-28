@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react'
 import { API_BASE } from '../config'
 
-const WELCOME = `Hello! I'm your AI trading assistant, trained on the ICT + ICC methodology.
+const WELCOME = `Hello! I'm your AI trading assistant, trained on the ICC methodology.
 
 I have access to your TradingView charts in real time. Ask me anything:
 • "Should I take this trade?" — I'll pull the current chart and analyze it
@@ -55,7 +55,7 @@ export default function Assistant() {
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh' }}>
       <div style={{ padding: '20px 24px 0', borderBottom: '1px solid var(--border-subtle)', background: 'var(--surface)' }}>
         <h1 className="page-title" style={{ marginBottom: 4 }}>AI Trading Assistant</h1>
-        <p style={{ fontSize: '0.85rem', color: 'var(--text-2)', marginBottom: 16 }}>Connected to TradingView • ICT + ICC methodology • Real-time chart analysis</p>
+        <p style={{ fontSize: '0.85rem', color: 'var(--text-2)', marginBottom: 16 }}>Connected to TradingView • ICC methodology • Real-time chart analysis</p>
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 12, maxWidth: 800, width: '100%', margin: '0 auto', alignSelf: 'stretch' }}>

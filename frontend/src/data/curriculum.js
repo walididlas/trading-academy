@@ -57,14 +57,14 @@ export const CURRICULUM = [
         content: [
           { type: 'text', content: 'Forex is a 24-hour market — but not all hours are equal. Price moves most aggressively during certain sessions when the major banks are active. Trading outside these windows is like fishing in an empty pond.' },
           { type: 'concept', title: 'The 3 Major Sessions', content: 'ASIAN SESSION: 23:00–08:00 UTC\nLow volatility, price ranges. JPY pairs most active. Good for accumulation phase.\n\nLONDON SESSION: 07:00–16:00 UTC\nHighest volume session. London is the world\'s largest Forex center. Major moves begin here.\n\nNEW YORK SESSION: 12:00–21:00 UTC\nSecond highest volume. Overlaps with London 12:00–16:00 UTC = the most volatile window.' },
-          { type: 'highlight', title: 'ICT Kill Zones — Where Setups Happen', content: 'London Kill Zone: 06:00–09:00 UTC (best for GBPUSD, EURUSD, GBPJPY)\nNew York Kill Zone: 11:00–14:00 UTC (strong setups, especially post-London)\n\nThese are the windows when institutional orders are most aggressively placed. 80% of high-quality setups occur within these windows. Outside of Kill Zones — wait or observe only.' },
+          { type: 'highlight', title: 'ICC Kill Zones — Where Setups Happen', content: 'London Kill Zone: 06:00–09:00 UTC (best for GBPUSD, EURUSD, GBPJPY)\nNew York Kill Zone: 11:00–14:00 UTC (strong setups, especially post-London)\n\nThese are the windows when institutional orders are most aggressively placed. 80% of high-quality setups occur within these windows. Outside of Kill Zones — wait or observe only.' },
           { type: 'subheading', content: 'The Spread' },
           { type: 'text', content: 'The spread is the difference between the buy price (ask) and sell price (bid). If GBPUSD bid is 1.3500 and ask is 1.3502, the spread is 2 pips. This is the broker\'s fee.' },
           { type: 'warning', content: 'During news events (CPI, NFP, FOMC), spreads can widen to 10–50 pips instantly. Never place a trade within 5 minutes of a major news release. Wait for the spike, wait for the spread to normalize, then analyze.' },
         ],
         quiz: [
           { question: 'What is the most volatile Forex trading window?', options: ['Asian session', 'London-NY overlap (12:00-16:00 UTC)', 'Late NY session', 'Weekend gaps'], correct: 1, explanation: 'The London-New York overlap (12:00-16:00 UTC) has the highest combined volume and produces the most significant price moves.' },
-          { question: 'The ICT London Kill Zone is:', options: ['07:00-10:00 UTC', '06:00-09:00 UTC', '09:00-12:00 UTC', '05:00-08:00 UTC'], correct: 1, explanation: 'The London Kill Zone is 06:00-09:00 UTC — the first 3 hours of the London session when institutional orders are placed most aggressively.' },
+          { question: 'The ICC London Kill Zone is:', options: ['07:00-10:00 UTC', '06:00-09:00 UTC', '09:00-12:00 UTC', '05:00-08:00 UTC'], correct: 1, explanation: 'The London Kill Zone is 06:00-09:00 UTC — the first 3 hours of the London session when institutional orders are placed most aggressively.' },
           { question: 'Why should you avoid trading during major news releases?', options: ['Markets close during news', 'Spreads widen and price moves erratically', 'Indicators stop working', 'Volume drops to zero'], correct: 1, explanation: 'During news releases, spreads can widen dramatically and price spikes unpredictably. This makes risk management nearly impossible.' }
         ]
       }
@@ -195,7 +195,7 @@ export const CURRICULUM = [
   },
   {
     id: 'module-5',
-    title: 'ICT Toolkit',
+    title: 'ICC Toolkit',
     description: 'The exact tools institutional traders use: Order Blocks, Fair Value Gaps, Premium & Discount, Kill Zones.',
     icon: '🛠️',
     color: '#10b981',

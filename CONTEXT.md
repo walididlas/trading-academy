@@ -7,7 +7,7 @@
 
 ## 1. What This Is
 
-A personal, full-stack trading education platform built for one user. It teaches the ICT + ICC Kill Zone methodology from zero to execution, connects live to TradingView Desktop, scans markets in real time, and acts as an always-on AI trading assistant.
+A personal, full-stack trading education platform built for one user. It teaches the ICC Kill Zone methodology from zero to execution, connects live to TradingView Desktop, scans markets in real time, and acts as an always-on AI trading assistant.
 
 **Not a SaaS. Not multi-user. Built for one person — the owner.**
 
@@ -206,7 +206,7 @@ All 5 conditions must be met:
 
 **Signal also includes:** `confluence_count` (0-7), `premium_discount` (zone, pct, correct), `atr`, `liq_targets` (BSL/SSL swing levels), `rr1/rr2/rr3` (actual R:R from swing targets)
 
-### ICT Concepts Used
+### ICC Concepts Used
 | Concept | Usage |
 |---|---|
 | BSL / SSL | TP targets — price delivers to opposing liquidity |
@@ -264,7 +264,7 @@ All 5 conditions must be met:
 | 2 | Reading the Chart | 2 | candlestick |
 | 3 | Market Structure | 1 | market-structure, bos-choch |
 | 4 | Liquidity — The Real Engine | 2 | liquidity |
-| 5 | ICT Toolkit | 3 | order-block, fvg, premium-discount |
+| 5 | ICC Toolkit | 3 | order-block, fvg, premium-discount |
 | 6 | The ICC Method ⭐ | 2 | icc |
 | 7 | Risk Management | 1 | — |
 | 8 | Trading Psychology | 1 | — |
@@ -494,7 +494,7 @@ Score → A=4, B=3, C=2, F≤1
 **File:** `backend/assistant.py`
 
 - Model: `claude-sonnet-4-6`
-- System prompt: full ICC methodology, pairs, rules, ICT concepts, grading criteria
+- System prompt: full ICC methodology, pairs, rules, ICC concepts, grading criteria
 - Live context injected per request: UTC time, Kill Zone status, live price if chart-related
 - Keeps last 10 messages of history
 - Requires `ANTHROPIC_API_KEY` in `backend/.env`
